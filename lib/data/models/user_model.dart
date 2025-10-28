@@ -65,9 +65,7 @@ enum GoalType {
 //function to calculate BMI
 
 double calculateBMI(int weight, int height) {
-  if (height <= 0) {
-    throw ArgumentError('Height must be greater than zero');
-  }
+  if (height <= 0) return 0;
   double heightInMeters = height / 100;
   return weight / (heightInMeters * heightInMeters);
 }
@@ -111,4 +109,81 @@ int suggestDailyCalorie(
     // No change
   }
   return dailyCalories.round();
+}
+
+// Copy with method
+extension UserModelCopyWith on UserModel {
+  UserModel copyWith({
+    String? id,
+    String? name,
+    String? email,
+    int? age,
+    String? gender,
+    int? height,
+    int? weight,
+    String? profilePictureUrl,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    GoalType? goal,
+  }) {
+    return UserModel(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      email: email ?? this.email,
+      age: age ?? this.age,
+      gender: gender ?? this.gender,
+      height: height ?? this.height,
+      weight: weight ?? this.weight,
+      profilePictureUrl: profilePictureUrl ?? this.profilePictureUrl,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      goal: goal ?? this.goal,
+    );
+  }
+}
+
+//TO JSON
+extension UserModelToJson on UserModel {
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'email': email,
+      'age': age,
+      'gender': gender,
+      'height': height,
+      'weight': weight,
+      'profilePictureUrl': profilePictureUrl,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      // Convertit GoalType en string simple (ex: GoalType.maintainWeight → "maintainWeight")
+      'goal': goal.toString().split('.').last,
+    };
+  }
+}
+
+//FROM JSON
+extension UserModelFromJson on UserModel {
+  // Méthode statique : peut être appelée directement sur la classe (UserModel.fromJson)
+  // sans avoir besoin de créer une instance.
+  // Exemple d'utilisation : UserModel user = UserModel.fromJson(jsonData);
+  static UserModel fromJson(Map<String, dynamic> json) {
+    return UserModel(
+      id: json['id'],
+      name: json['name'],
+      email: json['email'],
+      age: json['age'],
+      gender: json['gender'],
+      height: json['height'],
+      weight: json['weight'],
+      profilePictureUrl: json['profilePictureUrl'],
+      createdAt: DateTime.parse(json['createdAt']),
+      updatedAt: DateTime.parse(json['updatedAt']),
+      // Cherche la valeur de GoalType correspondant à la chaîne stockée dans le JSON
+      // Par exemple, si json['goal'] = "maintainWeight", retourne GoalType.maintainWeight
+      goal: GoalType.values.firstWhere(
+        (e) => e.toString().split('.').last == json['goal'],
+      ),
+    );
+  }
 }
