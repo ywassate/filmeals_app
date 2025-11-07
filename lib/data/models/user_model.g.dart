@@ -28,13 +28,16 @@ class UserModelAdapter extends TypeAdapter<UserModel> {
       createdAt: fields[8] as DateTime,
       updatedAt: fields[9] as DateTime,
       goal: fields[10] as GoalType,
+      targetWeight: fields[11] as int?,
+      activityLevel: fields[12] as ActivityLevel,
+      dailyCalorieGoal: fields[13] as int,
     );
   }
 
   @override
   void write(BinaryWriter writer, UserModel obj) {
     writer
-      ..writeByte(11)
+      ..writeByte(14)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -56,7 +59,13 @@ class UserModelAdapter extends TypeAdapter<UserModel> {
       ..writeByte(9)
       ..write(obj.updatedAt)
       ..writeByte(10)
-      ..write(obj.goal);
+      ..write(obj.goal)
+      ..writeByte(11)
+      ..write(obj.targetWeight)
+      ..writeByte(12)
+      ..write(obj.activityLevel)
+      ..writeByte(13)
+      ..write(obj.dailyCalorieGoal);
   }
 
   @override
@@ -110,6 +119,60 @@ class GoalTypeAdapter extends TypeAdapter<GoalType> {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is GoalTypeAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
+class ActivityLevelAdapter extends TypeAdapter<ActivityLevel> {
+  @override
+  final int typeId = 4;
+
+  @override
+  ActivityLevel read(BinaryReader reader) {
+    switch (reader.readByte()) {
+      case 0:
+        return ActivityLevel.sedentary;
+      case 1:
+        return ActivityLevel.lightlyActive;
+      case 2:
+        return ActivityLevel.moderatelyActive;
+      case 3:
+        return ActivityLevel.veryActive;
+      case 4:
+        return ActivityLevel.extraActive;
+      default:
+        return ActivityLevel.sedentary;
+    }
+  }
+
+  @override
+  void write(BinaryWriter writer, ActivityLevel obj) {
+    switch (obj) {
+      case ActivityLevel.sedentary:
+        writer.writeByte(0);
+        break;
+      case ActivityLevel.lightlyActive:
+        writer.writeByte(1);
+        break;
+      case ActivityLevel.moderatelyActive:
+        writer.writeByte(2);
+        break;
+      case ActivityLevel.veryActive:
+        writer.writeByte(3);
+        break;
+      case ActivityLevel.extraActive:
+        writer.writeByte(4);
+        break;
+    }
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActivityLevelAdapter &&
           runtimeType == other.runtimeType &&
           typeId == other.typeId;
 }

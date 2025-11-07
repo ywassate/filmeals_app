@@ -37,6 +37,15 @@ class UserModel {
   @HiveField(10)
   final GoalType goal;
 
+  @HiveField(11)
+  final int? targetWeight; // in kg
+
+  @HiveField(12)
+  final ActivityLevel activityLevel;
+
+  @HiveField(13)
+  final int dailyCalorieGoal; // calculated calorie goal
+
   UserModel({
     required this.id,
     required this.name,
@@ -49,6 +58,9 @@ class UserModel {
     required this.createdAt,
     required this.updatedAt,
     required this.goal,
+    this.targetWeight,
+    required this.activityLevel,
+    required this.dailyCalorieGoal,
   });
 }
 
@@ -60,6 +72,20 @@ enum GoalType {
   loseWeight,
   @HiveField(2)
   gainWeight,
+}
+
+@HiveType(typeId: 4)
+enum ActivityLevel {
+  @HiveField(0)
+  sedentary, // Peu ou pas d'exercice
+  @HiveField(1)
+  lightlyActive, // Exercice léger 1-3 jours/semaine
+  @HiveField(2)
+  moderatelyActive, // Exercice modéré 3-5 jours/semaine
+  @HiveField(3)
+  veryActive, // Exercice intense 6-7 jours/semaine
+  @HiveField(4)
+  extraActive, // Exercice très intense ou travail physique
 }
 
 //function to calculate BMI
@@ -89,7 +115,8 @@ int suggestDailyCalorie(
   String gender,
   int weight,
   int height,
-  String goal,
+  GoalType goal,
+  ActivityLevel activityLevel,
 ) {
   // Using Mifflin-St Jeor Equation
   double bmr;
@@ -99,15 +126,42 @@ int suggestDailyCalorie(
   } else {
     bmr = 10 * weight + 6.25 * height - 5 * age - 161;
   }
-  // Assuming a sedentary activity level
-  double dailyCalories = bmr * 1.2;
-  if (goal.toLowerCase() == 'lose weight') {
-    dailyCalories -= 300; // Caloric deficit
-  } else if (goal.toLowerCase() == 'gain muscle') {
-    dailyCalories += 400; // Caloric surplus
-  } else if (goal.toLowerCase() == 'maintain weight') {
-    // No change
+
+  // Apply activity level multiplier
+  double activityMultiplier;
+  switch (activityLevel) {
+    case ActivityLevel.sedentary:
+      activityMultiplier = 1.2;
+      break;
+    case ActivityLevel.lightlyActive:
+      activityMultiplier = 1.375;
+      break;
+    case ActivityLevel.moderatelyActive:
+      activityMultiplier = 1.55;
+      break;
+    case ActivityLevel.veryActive:
+      activityMultiplier = 1.725;
+      break;
+    case ActivityLevel.extraActive:
+      activityMultiplier = 1.9;
+      break;
   }
+
+  double dailyCalories = bmr * activityMultiplier;
+
+  // Adjust based on goal
+  switch (goal) {
+    case GoalType.loseWeight:
+      dailyCalories -= 500; // Caloric deficit for weight loss
+      break;
+    case GoalType.gainWeight:
+      dailyCalories += 500; // Caloric surplus for weight gain
+      break;
+    case GoalType.maintainWeight:
+      // No change
+      break;
+  }
+
   return dailyCalories.round();
 }
 
@@ -125,6 +179,9 @@ extension UserModelCopyWith on UserModel {
     DateTime? createdAt,
     DateTime? updatedAt,
     GoalType? goal,
+    int? targetWeight,
+    ActivityLevel? activityLevel,
+    int? dailyCalorieGoal,
   }) {
     return UserModel(
       id: id ?? this.id,
@@ -138,6 +195,9 @@ extension UserModelCopyWith on UserModel {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       goal: goal ?? this.goal,
+      targetWeight: targetWeight ?? this.targetWeight,
+      activityLevel: activityLevel ?? this.activityLevel,
+      dailyCalorieGoal: dailyCalorieGoal ?? this.dailyCalorieGoal,
     );
   }
 }
@@ -156,8 +216,10 @@ extension UserModelToJson on UserModel {
       'profilePictureUrl': profilePictureUrl,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
-      // Convertit GoalType en string simple (ex: GoalType.maintainWeight → "maintainWeight")
       'goal': goal.toString().split('.').last,
+      'targetWeight': targetWeight,
+      'activityLevel': activityLevel.toString().split('.').last,
+      'dailyCalorieGoal': dailyCalorieGoal,
     };
   }
 }
@@ -179,11 +241,14 @@ extension UserModelFromJson on UserModel {
       profilePictureUrl: json['profilePictureUrl'],
       createdAt: DateTime.parse(json['createdAt']),
       updatedAt: DateTime.parse(json['updatedAt']),
-      // Cherche la valeur de GoalType correspondant à la chaîne stockée dans le JSON
-      // Par exemple, si json['goal'] = "maintainWeight", retourne GoalType.maintainWeight
       goal: GoalType.values.firstWhere(
         (e) => e.toString().split('.').last == json['goal'],
       ),
+      targetWeight: json['targetWeight'],
+      activityLevel: ActivityLevel.values.firstWhere(
+        (e) => e.toString().split('.').last == json['activityLevel'],
+      ),
+      dailyCalorieGoal: json['dailyCalorieGoal'],
     );
   }
 }
