@@ -1,12 +1,23 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
 import 'package:filmeals_app/core/services/local_storage_service.dart';
 import 'package:filmeals_app/data/repository/user_repository.dart';
 import 'package:filmeals_app/data/repository/meal_repository.dart';
-import 'package:filmeals_app/presentation/screens/onboarding/welcome_screen.dart';
+import 'package:filmeals_app/presentation/screens/hub/main_hub_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Configuration de la barre de statut
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark,
+      systemNavigationBarColor: Colors.white,
+      systemNavigationBarIconBrightness: Brightness.dark,
+    ),
+  );
 
   // Initialiser le service de stockage local
   final storageService = LocalStorageService();
@@ -35,13 +46,10 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'FitMeals',
+      title: 'HealthSync',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      home: WelcomeScreen(
-        userRepository: userRepository,
-        mealRepository: mealRepository,
-      ),
+      home: const MainHubScreen(),
     );
   }
 }

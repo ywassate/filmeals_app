@@ -10,7 +10,7 @@ class MealRepository {
   /// Ajouter un nouveau repas
   Future<void> addMeal(MealModel meal) async {
     try {
-      await _storageService.mealBox.put(meal.id, meal);
+      await _storageService.mealsBox.put(meal.id, meal);
     } catch (e) {
       throw Exception('Erreur lors de l\'ajout du repas: $e');
     }
@@ -19,7 +19,7 @@ class MealRepository {
   /// Récupérer un repas par son ID
   Future<MealModel?> getMealById(String id) async {
     try {
-      return _storageService.mealBox.get(id);
+      return _storageService.mealsBox.get(id);
     } catch (e) {
       throw Exception('Erreur lors de la récupération du repas: $e');
     }
@@ -28,7 +28,7 @@ class MealRepository {
   /// Récupérer tous les repas d'un utilisateur
   Future<List<MealModel>> getUserMeals(String userId) async {
     try {
-      final allMeals = _storageService.mealBox.values.toList();
+      final allMeals = _storageService.mealsBox.values.toList();
       return allMeals.where((meal) => meal.userId == userId).toList()
         ..sort((a, b) => b.date.compareTo(a.date)); // Tri par date décroissante
     } catch (e) {
@@ -89,7 +89,7 @@ class MealRepository {
   Future<void> updateMeal(MealModel meal) async {
     try {
       final updatedMeal = meal.copyWith(updatedAt: DateTime.now());
-      await _storageService.mealBox.put(meal.id, updatedMeal);
+      await _storageService.mealsBox.put(meal.id, updatedMeal);
     } catch (e) {
       throw Exception('Erreur lors de la mise à jour du repas: $e');
     }
@@ -98,7 +98,7 @@ class MealRepository {
   /// Supprimer un repas
   Future<void> deleteMeal(String mealId) async {
     try {
-      await _storageService.mealBox.delete(mealId);
+      await _storageService.mealsBox.delete(mealId);
     } catch (e) {
       throw Exception('Erreur lors de la suppression du repas: $e');
     }
@@ -109,7 +109,7 @@ class MealRepository {
     try {
       final userMeals = await getUserMeals(userId);
       for (var meal in userMeals) {
-        await _storageService.mealBox.delete(meal.id);
+        await _storageService.mealsBox.delete(meal.id);
       }
     } catch (e) {
       throw Exception('Erreur lors de la suppression des repas: $e');
