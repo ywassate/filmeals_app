@@ -45,9 +45,11 @@ class BluetoothService {
 
   bool _isScanning = false;
   LocalStorageService? _storageService;
+  Timer? _continuousScanTimer;
 
   // === Tracking temporel ===
-  int minimumDurationSeconds = 120;
+  // Durée minimum: 5 minutes (300 secondes)
+  int minimumDurationSeconds = 300;
 
   Map<String, TemporaryDetection> _temporaryDetections = {};
   Set<String> _alreadyFilteredAddresses = {};
@@ -117,20 +119,24 @@ class BluetoothService {
     };
   }
 
+  /// Arrêter le scan continu
   Future<void> stopScan() async {
     try {
+      _continuousScanTimer?.cancel();
+      _continuousScanTimer = null;
       await FlutterBluetoothSerial.instance.cancelDiscovery();
       _isScanning = false;
-      print('⏹️ Scan arrêté');
+      print('⏹️ Scan continu arrêté');
     } catch (e) {
       print('❌ Erreur arrêt scan: $e');
     }
   }
 
-  /// Scan avec suivi temporel - MÉTHODE PRINCIPALE
-  Future<void> startScanWithDuration({
-    Duration scanInterval = const Duration(seconds: 10),
-    int numberOfScans = 9,
+  /// Démarrer le scan continu 24/7 - MÉTHODE PRINCIPALE
+  ///
+  /// Scan toutes les 5 minutes en continu jusqu'à stopScan()
+  /// Valide uniquement les devices présents ≥ 5 minutes
+  Future<void> startContinuousScan({
     Function(int, int, int)? onProgress,
   }) async {
     if (_isScanning) return;
@@ -140,47 +146,80 @@ class BluetoothService {
       _temporaryDetections.clear();
       _alreadyFilteredAddresses.clear();
 
-      int validatedContacts = 0;
+      print('🔍 Démarrage du scan continu (intervalle: 5min, validation: ≥5min)');
+      print('⚠️ Gardez l\'application ouverte pour un scan continu');
 
-      print('🔍 Démarrage du scan (durée minimum: ${minimumDurationSeconds}s)');
+      // Premier scan immédiat
+      await _performScanCycle(onProgress);
 
-      for (int scanNumber = 1; scanNumber <= numberOfScans; scanNumber++) {
-        await _performSingleScanForTracking();
-
-        if (scanNumber == 1) {
-          await _filterByContacts();
-        } else {
-          await _filterNewDevicesByContacts();
-        }
-
-        int newlyValidated = await _validateDetections();
-        validatedContacts += newlyValidated;
-
-        if (onProgress != null) {
-          onProgress(
-            _temporaryDetections.length,
-            _getPendingValidCount(),
-            validatedContacts,
-          );
-        }
-
-        if (scanNumber < numberOfScans) {
-          await Future.delayed(scanInterval);
-        }
-      }
-
-      _isScanning = false;
-
-      int finalValidated = await _validateDetections();
-      validatedContacts += finalValidated;
-
-      print('✅ Scan terminé: $validatedContacts contacts enregistrés');
+      // Configurer le scan périodique toutes les 5 minutes
+      _continuousScanTimer = Timer.periodic(
+        const Duration(minutes: 5),
+        (timer) async {
+          if (_isScanning) {
+            await _performScanCycle(onProgress);
+          } else {
+            timer.cancel();
+          }
+        },
+      );
 
     } catch (e) {
-      print('❌ Erreur scan multi-passes: $e');
+      print('❌ Erreur scan continu: $e');
       _isScanning = false;
       rethrow;
     }
+  }
+
+  /// Effectuer un cycle de scan complet
+  Future<void> _performScanCycle(Function(int, int, int)? onProgress) async {
+    try {
+      print('📡 Cycle de scan en cours...');
+
+      // Effectuer le scan
+      await _performSingleScanForTracking();
+
+      // Filtrer par contacts
+      if (_alreadyFilteredAddresses.isEmpty) {
+        await _filterByContacts();
+      } else {
+        await _filterNewDevicesByContacts();
+      }
+
+      // Valider les détections qui ont atteint la durée minimum (5 min)
+      int validated = await _validateDetections();
+
+      // Notifier l'UI
+      if (onProgress != null) {
+        onProgress(
+          _temporaryDetections.length,
+          _getPendingValidCount(),
+          validated,
+        );
+      }
+
+      // Nettoyer les devices fantômes (non vus depuis 10 minutes)
+      _cleanupGhostDevices();
+
+      print('✅ Cycle terminé: $_temporaryDetections.length devices trackés, $validated validés');
+
+    } catch (e) {
+      print('❌ Erreur cycle scan: $e');
+    }
+  }
+
+  /// Nettoyer les devices qui ne sont plus présents
+  void _cleanupGhostDevices() {
+    final now = DateTime.now();
+    _temporaryDetections.removeWhere((address, detection) {
+      // Supprimer si non vu depuis 10 minutes
+      bool isExpired = now.difference(detection.lastSeen).inMinutes >= 10;
+      if (isExpired) {
+        _alreadyFilteredAddresses.remove(address);
+        print('🧹 Nettoyage: ${detection.name} ($address) non vu depuis 10min');
+      }
+      return isExpired;
+    });
   }
 
   Future<void> _performSingleScanForTracking() async {
@@ -283,14 +322,6 @@ class BluetoothService {
         _alreadyFilteredAddresses.remove(entry.key);
       }
     }
-
-    _temporaryDetections.removeWhere((address, detection) {
-      bool isExpired = !detection.isStillPresent(30);
-      if (isExpired) {
-        _alreadyFilteredAddresses.remove(address);
-      }
-      return isExpired;
-    });
 
     return validated;
   }

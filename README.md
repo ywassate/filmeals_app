@@ -34,8 +34,8 @@ Tracks social interactions by detecting nearby Bluetooth devices and matching th
 
 #### How It Works
 
-1. **Bluetooth Scanning**: Performs multi-pass scanning (9 scans × 10 seconds) to detect nearby devices
-2. **Duration Validation**: Only validates devices present for ≥2 minutes (configurable)
+1. **Continuous Bluetooth Scanning**: Performs continuous scanning every 5 minutes (24/7 until stopped)
+2. **Duration Validation**: Only validates devices present for ≥5 minutes (real meeting threshold)
 3. **Contact Matching**: Uses a 4-rule scoring algorithm to match device names to contacts:
    - Rule 1: Exact match (score 100)
    - Rule 2: Bluetooth name contains contact name (score 80+)
@@ -44,11 +44,18 @@ Tracks social interactions by detecting nearby Bluetooth devices and matching th
 4. **Persistence**: Stores validated encounters with encounter count tracking
 
 #### Features
-- Real-time scan progress display
-- Permission handling for Bluetooth and Contacts
-- Contact list with encounter history
-- Device name and MAC address tracking
-- Cache optimization for battery efficiency
+- **Continuous 24/7 scanning** - Scans every 5 minutes automatically
+- **Real-time progress display** - Shows tracked devices, pending, and validated contacts
+- **Permission handling** - Runtime Bluetooth and Contacts permissions
+- **Contact list with encounter history** - Tracks all validated encounters
+- **Device name and MAC address tracking** - Persistent storage
+- **Cache optimization** - 24-hour cache for battery efficiency
+- **Ghost device cleanup** - Removes devices not seen for 10 minutes
+
+#### Important Notes
+⚠️ **The app must remain open** during scanning. Flutter does not support true background services without native Android/Kotlin code. For an academic project, keep the app in the foreground during testing.
+
+⚠️ **Minimum encounter duration: 5 minutes** - Only meetings ≥5 minutes are counted as real social interactions.
 
 #### Permissions Required (Android)
 ```xml
@@ -168,16 +175,25 @@ flutter build apk --release
 
 1. Navigate to the **Social** tab
 2. Grant **Bluetooth** and **Contacts** permissions when prompted
-3. Tap **"Lancer un scan"** to start scanning
-4. The scan takes ~2:20 minutes to complete
-5. Devices matching your contacts (present ≥2 min) will be validated and saved
-6. View your encounter history in the contacts list
+3. Tap **"Démarrer le scan continu"** to start continuous scanning
+4. **Keep the app open** - The scan runs every 5 minutes continuously
+5. Devices matching your contacts (present ≥5 min) will be validated and saved automatically
+6. Tap **"Arrêter le scan continu"** to stop
+7. View your encounter history in the contacts list
 
 ### Configuration
 
-You can adjust the minimum duration in `BluetoothService`:
+You can adjust the minimum encounter duration in `BluetoothService`:
 ```dart
-BluetoothService.instance.setMinimumDuration(120); // 120 seconds = 2 minutes
+BluetoothService.instance.setMinimumDuration(300); // 300 seconds = 5 minutes
+```
+
+To change the scan interval, modify the Timer.periodic duration in `startContinuousScan()`:
+```dart
+_continuousScanTimer = Timer.periodic(
+  const Duration(minutes: 5),  // Scan every 5 minutes
+  (timer) async { ... }
+);
 ```
 
 ## Project Structure

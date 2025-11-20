@@ -134,35 +134,29 @@ class _SocialTabState extends State<SocialTab> {
       });
 
       try {
-        BluetoothService.instance.setMinimumDuration(120);
+        // Durée minimum: 5 minutes (300 secondes)
+        BluetoothService.instance.setMinimumDuration(300);
 
-        await BluetoothService.instance.startScanWithDuration(
-          scanInterval: const Duration(seconds: 10),
-          numberOfScans: 9,
+        await BluetoothService.instance.startContinuousScan(
           onProgress: (total, pending, validated) {
-            setState(() {
-              _appareilsDetectes = total;
-              _pendingDetections = pending;
-              _validatedContacts = validated;
-            });
+            if (mounted) {
+              setState(() {
+                _appareilsDetectes = total;
+                _pendingDetections = pending;
+                _validatedContacts += validated;
+              });
+
+              // Recharger la liste si de nouveaux contacts sont validés
+              if (validated > 0) {
+                _loadContacts();
+              }
+            }
           },
         );
 
-        setState(() {
-          _isScanning = false;
-        });
+        // Le scan continue jusqu'à ce que l'utilisateur l'arrête
+        // pas de setState(_isScanning = false) ici
 
-        _loadContacts();
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                  'Scan terminé - $_validatedContacts contacts validés'),
-              duration: const Duration(seconds: 3),
-            ),
-          );
-        }
       } catch (e) {
         setState(() {
           _isScanning = false;
@@ -436,24 +430,29 @@ class _SocialTabState extends State<SocialTab> {
             const CircularProgressIndicator(color: Colors.white),
             const SizedBox(height: 16),
             const Text(
-              'Scan en cours... (~2:20 min)',
+              'Scan continu actif',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
               ),
             ),
+            const SizedBox(height: 8),
+            const Text(
+              'Scan toutes les 5 minutes',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
             const SizedBox(height: 12),
             Text(
-              '$_appareilsDetectes appareils détectés',
+              '$_appareilsDetectes appareils trackés',
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
             Text(
-              '$_pendingDetections en attente (< 2min)',
+              '$_pendingDetections en attente (< 5min)',
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
             Text(
-              '$_validatedContacts validés (>= 2min)',
+              '$_validatedContacts validés (≥ 5min)',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 14,
@@ -491,7 +490,7 @@ class _SocialTabState extends State<SocialTab> {
                   : null,
               icon: Icon(_isScanning ? Icons.stop : Icons.bluetooth_searching),
               label: Text(
-                _isScanning ? 'Arrêter le scan' : 'Lancer un scan',
+                _isScanning ? 'Arrêter le scan continu' : 'Démarrer le scan continu',
                 style: const TextStyle(fontSize: 16),
               ),
               style: ElevatedButton.styleFrom(
