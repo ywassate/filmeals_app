@@ -1,0 +1,379 @@
+import 'dart:async';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
+import 'package:filmeals_app/data/models/social_sensor_data_model.dart';
+import 'package:filmeals_app/core/services/local_storage_service.dart';
+import 'package:filmeals_app/core/services/contacts_matching_service.dart';
+
+/// Classe pour tracker les détections temporaires
+class TemporaryDetection {
+  final String address;
+  final String name;
+  final DateTime firstSeen;
+  DateTime lastSeen;
+
+  TemporaryDetection({
+    required this.address,
+    required this.name,
+    required this.firstSeen,
+    required this.lastSeen,
+  });
+
+  Duration get duration => lastSeen.difference(firstSeen);
+
+  bool isStillPresent(int maxSecondsSinceLastSeen) {
+    final now = DateTime.now();
+    return now.difference(lastSeen).inSeconds <= maxSecondsSinceLastSeen;
+  }
+
+  @override
+  String toString() {
+    return 'Detection: $name ($address) - ${duration.inMinutes}min ${duration.inSeconds % 60}s';
+  }
+}
+
+/// Service de gestion du Bluetooth avec tracking temporel des appareils
+///
+/// ARCHITECTURE:
+/// 1. Détection rapide de TOUS les devices (sans blocage)
+/// 2. Filtrage par contacts APRÈS le scan (pour ne pas ralentir)
+/// 3. Validation uniquement des devices présents ≥ minimumDurationSeconds
+/// 4. Cache des résultats de matching pour économiser la batterie
+class BluetoothService {
+  static final BluetoothService instance = BluetoothService._init();
+
+  BluetoothService._init();
+
+  bool _isScanning = false;
+  LocalStorageService? _storageService;
+
+  // === Tracking temporel ===
+  int minimumDurationSeconds = 120;
+
+  Map<String, TemporaryDetection> _temporaryDetections = {};
+  Set<String> _alreadyFilteredAddresses = {};
+
+  // === Cache pour optimisation batterie ===
+  Map<String, String?> _contactMatchCache = {};
+  Map<String, DateTime> _cacheTimestamp = {};
+  static const Duration _cacheDuration = Duration(hours: 24);
+
+  bool get isScanning => _isScanning;
+
+  /// Initialiser avec le storage service
+  void init(LocalStorageService storageService) {
+    _storageService = storageService;
+  }
+
+  void setMinimumDuration(int seconds) {
+    minimumDurationSeconds = seconds;
+    print('⏱️ Durée minimum: ${seconds}s (${seconds ~/ 60}min)');
+  }
+
+  void _cleanExpiredCache() {
+    final now = DateTime.now();
+    _cacheTimestamp.removeWhere((deviceName, timestamp) {
+      bool expired = now.difference(timestamp) > _cacheDuration;
+      if (expired) {
+        _contactMatchCache.remove(deviceName);
+      }
+      return expired;
+    });
+  }
+
+  void clearContactCache() {
+    _contactMatchCache.clear();
+    _cacheTimestamp.clear();
+    print('🗑️ Cache contacts vidé');
+  }
+
+  Future<String?> _checkContactWithCache(String deviceName) async {
+    _cleanExpiredCache();
+
+    if (_contactMatchCache.containsKey(deviceName)) {
+      return _contactMatchCache[deviceName];
+    }
+
+    final matchedContact = await ContactsMatchingService.instance.findMatchingContact(deviceName);
+
+    _contactMatchCache[deviceName] = matchedContact;
+    _cacheTimestamp[deviceName] = DateTime.now();
+
+    return matchedContact;
+  }
+
+  List<TemporaryDetection> getPendingDetections() {
+    return _temporaryDetections.values.toList();
+  }
+
+  int getPendingCount() {
+    return _temporaryDetections.length;
+  }
+
+  Map<String, int> getCacheStats() {
+    return {
+      'total_entries': _contactMatchCache.length,
+      'matches': _contactMatchCache.values.where((v) => v != null).length,
+      'non_matches': _contactMatchCache.values.where((v) => v == null).length,
+    };
+  }
+
+  Future<void> stopScan() async {
+    try {
+      await FlutterBluetoothSerial.instance.cancelDiscovery();
+      _isScanning = false;
+      print('⏹️ Scan arrêté');
+    } catch (e) {
+      print('❌ Erreur arrêt scan: $e');
+    }
+  }
+
+  /// Scan avec suivi temporel - MÉTHODE PRINCIPALE
+  Future<void> startScanWithDuration({
+    Duration scanInterval = const Duration(seconds: 10),
+    int numberOfScans = 9,
+    Function(int, int, int)? onProgress,
+  }) async {
+    if (_isScanning) return;
+
+    try {
+      _isScanning = true;
+      _temporaryDetections.clear();
+      _alreadyFilteredAddresses.clear();
+
+      int validatedContacts = 0;
+
+      print('🔍 Démarrage du scan (durée minimum: ${minimumDurationSeconds}s)');
+
+      for (int scanNumber = 1; scanNumber <= numberOfScans; scanNumber++) {
+        await _performSingleScanForTracking();
+
+        if (scanNumber == 1) {
+          await _filterByContacts();
+        } else {
+          await _filterNewDevicesByContacts();
+        }
+
+        int newlyValidated = await _validateDetections();
+        validatedContacts += newlyValidated;
+
+        if (onProgress != null) {
+          onProgress(
+            _temporaryDetections.length,
+            _getPendingValidCount(),
+            validatedContacts,
+          );
+        }
+
+        if (scanNumber < numberOfScans) {
+          await Future.delayed(scanInterval);
+        }
+      }
+
+      _isScanning = false;
+
+      int finalValidated = await _validateDetections();
+      validatedContacts += finalValidated;
+
+      print('✅ Scan terminé: $validatedContacts contacts enregistrés');
+
+    } catch (e) {
+      print('❌ Erreur scan multi-passes: $e');
+      _isScanning = false;
+      rethrow;
+    }
+  }
+
+  Future<void> _performSingleScanForTracking() async {
+    try {
+      Set<String> processedAddresses = {};
+
+      bool? isEnabled = await FlutterBluetoothSerial.instance.isEnabled;
+      if (isEnabled == null || !isEnabled) {
+        throw Exception('Bluetooth désactivé');
+      }
+
+      final discoveryCompleter = Completer<void>();
+
+      FlutterBluetoothSerial.instance.startDiscovery().listen(
+        (result) {
+          if (!processedAddresses.contains(result.device.address)) {
+            processedAddresses.add(result.device.address);
+            String deviceName = result.device.name ?? 'Inconnu';
+            _trackDevice(result.device.address, deviceName);
+          }
+        },
+        onDone: () => discoveryCompleter.complete(),
+      );
+
+      await Future.any([
+        discoveryCompleter.future,
+        Future.delayed(Duration(seconds: 10)),
+      ]);
+
+      await FlutterBluetoothSerial.instance.cancelDiscovery();
+
+    } catch (e) {
+      print('❌ Erreur scan unique: $e');
+    }
+  }
+
+  void _trackDevice(String address, String name) {
+    final now = DateTime.now();
+
+    if (_temporaryDetections.containsKey(address)) {
+      var detection = _temporaryDetections[address]!;
+      detection.lastSeen = now;
+    } else {
+      _temporaryDetections[address] = TemporaryDetection(
+        address: address,
+        name: name,
+        firstSeen: now,
+        lastSeen: now,
+      );
+    }
+  }
+
+  Future<void> _filterByContacts() async {
+    final detectionsToCheck = Map<String, TemporaryDetection>.from(_temporaryDetections);
+
+    for (var entry in detectionsToCheck.entries) {
+      final detection = entry.value;
+      final matchedContactName = await _checkContactWithCache(detection.name);
+
+      if (matchedContactName == null) {
+        _temporaryDetections.remove(entry.key);
+      } else {
+        _alreadyFilteredAddresses.add(entry.key);
+      }
+    }
+  }
+
+  Future<void> _filterNewDevicesByContacts() async {
+    final newDevices = _temporaryDetections.entries
+        .where((entry) => !_alreadyFilteredAddresses.contains(entry.key))
+        .toList();
+
+    if (newDevices.isEmpty) return;
+
+    for (var entry in newDevices) {
+      final detection = entry.value;
+      final matchedContactName = await _checkContactWithCache(detection.name);
+
+      if (matchedContactName == null) {
+        _temporaryDetections.remove(entry.key);
+      } else {
+        _alreadyFilteredAddresses.add(entry.key);
+      }
+    }
+  }
+
+  Future<int> _validateDetections() async {
+    int validated = 0;
+    final detectionsToCheck = Map<String, TemporaryDetection>.from(_temporaryDetections);
+
+    for (var entry in detectionsToCheck.entries) {
+      final detection = entry.value;
+      int durationSeconds = detection.duration.inSeconds;
+
+      if (durationSeconds >= minimumDurationSeconds) {
+        bool wasMatched = await _processDevice(detection.name, detection.address);
+        if (wasMatched) validated++;
+
+        _temporaryDetections.remove(entry.key);
+        _alreadyFilteredAddresses.remove(entry.key);
+      }
+    }
+
+    _temporaryDetections.removeWhere((address, detection) {
+      bool isExpired = !detection.isStillPresent(30);
+      if (isExpired) {
+        _alreadyFilteredAddresses.remove(address);
+      }
+      return isExpired;
+    });
+
+    return validated;
+  }
+
+  int _getPendingValidCount() {
+    return _temporaryDetections.values
+        .where((d) => d.duration.inSeconds < minimumDurationSeconds)
+        .length;
+  }
+
+  /// Enregistrer un device validé en base de données Hive
+  Future<bool> _processDevice(String bluetoothName, String macAddress) async {
+    try {
+      if (_storageService == null) {
+        print('❌ StorageService non initialisé');
+        return false;
+      }
+
+      final matchedContactName = await ContactsMatchingService.instance
+          .findMatchingContact(bluetoothName);
+
+      if (matchedContactName == null) {
+        return false;
+      }
+
+      final box = _storageService!.bluetoothContactsBox;
+      final existingContact = box.get(macAddress);
+
+      final now = DateTime.now();
+
+      if (existingContact != null) {
+        final updatedContact = BluetoothContactModel(
+          macAddress: macAddress,
+          contactName: matchedContactName,
+          deviceName: bluetoothName,
+          firstEncounter: existingContact.firstEncounter,
+          lastEncounter: now,
+          encounterCount: existingContact.encounterCount + 1,
+        );
+        await box.put(macAddress, updatedContact);
+        print('✅ $matchedContactName enregistré (rencontre #${updatedContact.encounterCount})');
+      } else {
+        final newContact = BluetoothContactModel(
+          macAddress: macAddress,
+          contactName: matchedContactName,
+          deviceName: bluetoothName,
+          firstEncounter: now,
+          lastEncounter: now,
+          encounterCount: 1,
+        );
+        await box.put(macAddress, newContact);
+        print('✅ $matchedContactName enregistré (nouvelle rencontre)');
+      }
+
+      return true;
+    } catch (e) {
+      print('❌ Erreur lors de l\'enregistrement: $e');
+      return false;
+    }
+  }
+
+  /// Récupérer tous les contacts Bluetooth enregistrés
+  List<BluetoothContactModel> getAllContacts() {
+    if (_storageService == null) return [];
+
+    final box = _storageService!.bluetoothContactsBox;
+    final contacts = box.values.toList();
+
+    // Trier par dernière rencontre (plus récent en premier)
+    contacts.sort((a, b) => b.lastEncounter.compareTo(a.lastEncounter));
+
+    return contacts;
+  }
+
+  /// Supprimer tous les contacts
+  Future<void> deleteAllContacts() async {
+    if (_storageService == null) return;
+    await _storageService!.bluetoothContactsBox.clear();
+  }
+
+  /// Supprimer un contact spécifique
+  Future<void> deleteContact(String macAddress) async {
+    if (_storageService == null) return;
+    await _storageService!.bluetoothContactsBox.delete(macAddress);
+  }
+}

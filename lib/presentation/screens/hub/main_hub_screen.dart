@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
+import 'package:filmeals_app/core/services/local_storage_service.dart';
 import 'package:filmeals_app/presentation/screens/hub/tabs/home_tab.dart';
 import 'package:filmeals_app/presentation/screens/hub/tabs/meals_tab.dart';
 import 'package:filmeals_app/presentation/screens/hub/tabs/sleep_tab.dart';
@@ -8,7 +9,9 @@ import 'package:filmeals_app/presentation/screens/hub/tabs/social_tab.dart';
 
 /// Écran principal avec navigation par tabs
 class MainHubScreen extends StatefulWidget {
-  const MainHubScreen({super.key});
+  final LocalStorageService storageService;
+
+  const MainHubScreen({super.key, required this.storageService});
 
   @override
   State<MainHubScreen> createState() => _MainHubScreenState();
@@ -18,19 +21,19 @@ class _MainHubScreenState extends State<MainHubScreen>
     with SingleTickerProviderStateMixin {
   int _currentIndex = 0;
   late PageController _pageController;
-
-  final List<Widget> _tabs = const [
-    HomeTab(),
-    MealsTab(),
-    SleepTab(),
-    LocationTab(),
-    SocialTab(),
-  ];
+  late List<Widget> _tabs;
 
   @override
   void initState() {
     super.initState();
     _pageController = PageController();
+    _tabs = [
+      const HomeTab(),
+      const MealsTab(),
+      const SleepTab(),
+      const LocationTab(),
+      SocialTab(storageService: widget.storageService),
+    ];
   }
 
   @override

@@ -209,3 +209,79 @@ enum SocialSentiment {
   @HiveField(3)
   veryPositive, // Très positif
 }
+
+/// Modèle pour les contacts Bluetooth détectés
+@HiveType(typeId: 20)
+class BluetoothContactModel {
+  @HiveField(0)
+  final String macAddress; // Adresse MAC unique du device
+
+  @HiveField(1)
+  final String contactName; // Nom du contact matché
+
+  @HiveField(2)
+  final String deviceName; // Nom du device Bluetooth
+
+  @HiveField(3)
+  final DateTime firstEncounter; // Première rencontre
+
+  @HiveField(4)
+  final DateTime lastEncounter; // Dernière rencontre
+
+  @HiveField(5)
+  final int encounterCount; // Nombre de rencontres
+
+  BluetoothContactModel({
+    required this.macAddress,
+    required this.contactName,
+    required this.deviceName,
+    required this.firstEncounter,
+    required this.lastEncounter,
+    required this.encounterCount,
+  });
+
+  BluetoothContactModel copyWith({
+    String? macAddress,
+    String? contactName,
+    String? deviceName,
+    DateTime? firstEncounter,
+    DateTime? lastEncounter,
+    int? encounterCount,
+  }) {
+    return BluetoothContactModel(
+      macAddress: macAddress ?? this.macAddress,
+      contactName: contactName ?? this.contactName,
+      deviceName: deviceName ?? this.deviceName,
+      firstEncounter: firstEncounter ?? this.firstEncounter,
+      lastEncounter: lastEncounter ?? this.lastEncounter,
+      encounterCount: encounterCount ?? this.encounterCount,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'macAddress': macAddress,
+      'contactName': contactName,
+      'deviceName': deviceName,
+      'firstEncounter': firstEncounter.toIso8601String(),
+      'lastEncounter': lastEncounter.toIso8601String(),
+      'encounterCount': encounterCount,
+    };
+  }
+
+  factory BluetoothContactModel.fromJson(Map<String, dynamic> json) {
+    return BluetoothContactModel(
+      macAddress: json['macAddress'],
+      contactName: json['contactName'],
+      deviceName: json['deviceName'],
+      firstEncounter: DateTime.parse(json['firstEncounter']),
+      lastEncounter: DateTime.parse(json['lastEncounter']),
+      encounterCount: json['encounterCount'],
+    );
+  }
+
+  @override
+  String toString() {
+    return 'BluetoothContact: $contactName ($macAddress) - $encounterCount rencontres';
+  }
+}

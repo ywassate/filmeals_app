@@ -1,8 +1,211 @@
 import 'package:flutter/material.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
+import 'package:filmeals_app/core/services/bluetooth_service.dart';
+import 'package:filmeals_app/core/services/permission_service.dart';
+import 'package:filmeals_app/core/services/local_storage_service.dart';
+import 'package:filmeals_app/data/models/social_sensor_data_model.dart';
+import 'package:intl/intl.dart';
 
-class SocialTab extends StatelessWidget {
-  const SocialTab({super.key});
+class SocialTab extends StatefulWidget {
+  final LocalStorageService storageService;
+
+  const SocialTab({super.key, required this.storageService});
+
+  @override
+  State<SocialTab> createState() => _SocialTabState();
+}
+
+class _SocialTabState extends State<SocialTab> {
+  bool _isScanning = false;
+  bool _bluetoothPermissionsGranted = false;
+  bool _contactsPermissionGranted = false;
+  int _appareilsDetectes = 0;
+  int _pendingDetections = 0;
+  int _validatedContacts = 0;
+  List<BluetoothContactModel> _contacts = [];
+
+  @override
+  void initState() {
+    super.initState();
+    BluetoothService.instance.init(widget.storageService);
+    _checkPermissions();
+    _loadContacts();
+  }
+
+  Future<void> _checkPermissions() async {
+    bool bluetooth = await PermissionService.hasBluetoothPermissions();
+    bool contacts = await PermissionService.hasContactsPermission();
+
+    setState(() {
+      _bluetoothPermissionsGranted = bluetooth;
+      _contactsPermissionGranted = contacts;
+    });
+  }
+
+  void _loadContacts() {
+    setState(() {
+      _contacts = BluetoothService.instance.getAllContacts();
+    });
+  }
+
+  Future<void> _requestBluetoothPermissions() async {
+    bool granted = await PermissionService.requestBluetoothPermissions();
+
+    setState(() {
+      _bluetoothPermissionsGranted = granted;
+    });
+
+    if (granted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permissions Bluetooth accordées')),
+      );
+    } else {
+      _showPermissionDeniedDialog('Bluetooth');
+    }
+  }
+
+  Future<void> _requestContactsPermission() async {
+    bool granted = await PermissionService.requestContactsPermission();
+
+    setState(() {
+      _contactsPermissionGranted = granted;
+    });
+
+    if (granted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permission Contacts accordée')),
+      );
+    } else {
+      _showPermissionDeniedDialog('Contacts');
+    }
+  }
+
+  void _showPermissionDeniedDialog(String permissionType) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Permission refusée'),
+        content: Text(
+            'L\'accès à $permissionType est nécessaire pour le fonctionnement du scan.\n\n'
+            'Voulez-vous ouvrir les paramètres ?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Annuler'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              PermissionService.openSettings();
+            },
+            child: const Text('Paramètres'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _toggleScan() async {
+    if (!_bluetoothPermissionsGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permissions Bluetooth requises')),
+      );
+      return;
+    }
+
+    if (!_contactsPermissionGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permission Contacts requise')),
+      );
+      return;
+    }
+
+    if (_isScanning) {
+      await BluetoothService.instance.stopScan();
+      setState(() {
+        _isScanning = false;
+      });
+    } else {
+      setState(() {
+        _isScanning = true;
+        _appareilsDetectes = 0;
+        _pendingDetections = 0;
+        _validatedContacts = 0;
+      });
+
+      try {
+        BluetoothService.instance.setMinimumDuration(120);
+
+        await BluetoothService.instance.startScanWithDuration(
+          scanInterval: const Duration(seconds: 10),
+          numberOfScans: 9,
+          onProgress: (total, pending, validated) {
+            setState(() {
+              _appareilsDetectes = total;
+              _pendingDetections = pending;
+              _validatedContacts = validated;
+            });
+          },
+        );
+
+        setState(() {
+          _isScanning = false;
+        });
+
+        _loadContacts();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  'Scan terminé - $_validatedContacts contacts validés'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      } catch (e) {
+        setState(() {
+          _isScanning = false;
+        });
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erreur: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _deleteAllContacts() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Supprimer tous les contacts ?'),
+        content: const Text('Cette action est irréversible.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annuler'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Supprimer', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      await BluetoothService.instance.deleteAllContacts();
+      _loadContacts();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Tous les contacts supprimés')),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -36,7 +239,7 @@ class SocialTab extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(16),
                               ),
                               child: const Icon(
-                                Icons.people_rounded,
+                                Icons.bluetooth_searching_rounded,
                                 color: Colors.white,
                                 size: 32,
                               ),
@@ -55,7 +258,7 @@ class SocialTab extends StatelessWidget {
                                     ),
                                   ),
                                   Text(
-                                    'Vos interactions sociales',
+                                    'Détection Bluetooth des contacts',
                                     style: TextStyle(
                                       color: Colors.white70,
                                       fontSize: 14,
@@ -72,6 +275,14 @@ class SocialTab extends StatelessWidget {
                 ),
               ),
             ),
+            actions: [
+              if (_contacts.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.delete_forever, color: Colors.white),
+                  onPressed: _deleteAllContacts,
+                  tooltip: 'Supprimer tout',
+                ),
+            ],
           ),
 
           // Contenu
@@ -81,56 +292,44 @@ class SocialTab extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Résumé quotidien
-                  _buildDailySummary(),
+                  // Permissions
+                  if (!_bluetoothPermissionsGranted ||
+                      !_contactsPermissionGranted)
+                    _buildPermissionsCard(),
+
+                  if (!_bluetoothPermissionsGranted ||
+                      !_contactsPermissionGranted)
+                    const SizedBox(height: 24),
+
+                  // Scanner
+                  _buildScannerCard(),
                   const SizedBox(height: 24),
 
-                  // Stats sociales
-                  const Text(
-                    'Statistiques',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildSocialStats(),
-                  const SizedBox(height: 32),
+                  // Statistiques
+                  _buildStatsRow(),
+                  const SizedBox(height: 24),
 
-                  // Interactions récentes
+                  // Liste des contacts
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
-                        'Interactions récentes',
-                        style: TextStyle(
+                      Text(
+                        'Contacts détectés (${_contacts.length})',
+                        style: const TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
                           color: AppTheme.textPrimaryColor,
                         ),
                       ),
-                      TextButton(
-                        onPressed: () {},
-                        child: const Text('Voir tout'),
+                      IconButton(
+                        icon: const Icon(Icons.refresh),
+                        onPressed: _loadContacts,
+                        tooltip: 'Rafraîchir',
                       ),
                     ],
                   ),
                   const SizedBox(height: 16),
-                  _buildInteractions(),
-                  const SizedBox(height: 32),
-
-                  // Analyse d'humeur
-                  const Text(
-                    'Humeur',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildMoodAnalysis(),
+                  _buildContactsList(),
                 ],
               ),
             ),
@@ -140,15 +339,92 @@ class SocialTab extends StatelessWidget {
     );
   }
 
-  Widget _buildDailySummary() {
+  Widget _buildPermissionsCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange),
+              SizedBox(width: 8),
+              Text(
+                'Permissions requises',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          // Bluetooth
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              _bluetoothPermissionsGranted
+                  ? Icons.check_circle
+                  : Icons.cancel,
+              color:
+                  _bluetoothPermissionsGranted ? Colors.green : Colors.red,
+            ),
+            title: const Text('Bluetooth'),
+            trailing: _bluetoothPermissionsGranted
+                ? null
+                : ElevatedButton(
+                    onPressed: _requestBluetoothPermissions,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.socialColor,
+                    ),
+                    child: const Text('Autoriser'),
+                  ),
+          ),
+          // Contacts
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              _contactsPermissionGranted
+                  ? Icons.check_circle
+                  : Icons.cancel,
+              color: _contactsPermissionGranted ? Colors.green : Colors.red,
+            ),
+            title: const Text('Contacts'),
+            trailing: _contactsPermissionGranted
+                ? null
+                : ElevatedButton(
+                    onPressed: _requestContactsPermission,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.socialColor,
+                    ),
+                    child: const Text('Autoriser'),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScannerCard() {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        gradient: AppTheme.socialGradient,
+        gradient: _isScanning
+            ? LinearGradient(
+                colors: [Colors.green.shade400, Colors.green.shade600],
+              )
+            : AppTheme.socialGradient,
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: AppTheme.socialColor.withOpacity(0.3),
+            color: (_isScanning ? Colors.green : AppTheme.socialColor)
+                .withOpacity(0.3),
             blurRadius: 20,
             offset: const Offset(0, 8),
           ),
@@ -156,257 +432,156 @@ class SocialTab extends StatelessWidget {
       ),
       child: Column(
         children: [
-          const Text(
-            'Interactions aujourd\'hui',
-            style: TextStyle(
-              color: Colors.white70,
-              fontSize: 14,
+          if (_isScanning) ...[
+            const CircularProgressIndicator(color: Colors.white),
+            const SizedBox(height: 16),
+            const Text(
+              'Scan en cours... (~2:20 min)',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            '12',
-            style: TextStyle(
+            const SizedBox(height: 12),
+            Text(
+              '$_appareilsDetectes appareils détectés',
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            Text(
+              '$_pendingDetections en attente (< 2min)',
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            Text(
+              '$_validatedContacts validés (>= 2min)',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ] else ...[
+            const Icon(
+              Icons.bluetooth_searching_rounded,
               color: Colors.white,
-              fontSize: 64,
-              fontWeight: FontWeight.bold,
+              size: 48,
             ),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildSummaryItem(
-                Icons.chat_bubble_rounded,
-                '8',
-                'Messages',
+            const SizedBox(height: 12),
+            const Text(
+              'Prêt à scanner',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
               ),
-              Container(
-                width: 1,
-                height: 40,
-                color: Colors.white.withOpacity(0.2),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${_contacts.length} contacts enregistrés',
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+          ],
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: (_bluetoothPermissionsGranted &&
+                      _contactsPermissionGranted)
+                  ? _toggleScan
+                  : null,
+              icon: Icon(_isScanning ? Icons.stop : Icons.bluetooth_searching),
+              label: Text(
+                _isScanning ? 'Arrêter le scan' : 'Lancer un scan',
+                style: const TextStyle(fontSize: 16),
               ),
-              _buildSummaryItem(
-                Icons.phone_rounded,
-                '2',
-                'Appels',
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _isScanning ? Colors.red : Colors.white,
+                foregroundColor: _isScanning ? Colors.white : AppTheme.socialColor,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
-              Container(
-                width: 1,
-                height: 40,
-                color: Colors.white.withOpacity(0.2),
-              ),
-              _buildSummaryItem(
-                Icons.people_rounded,
-                '2',
-                'Rencontres',
-              ),
-            ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildSummaryItem(IconData icon, String value, String label) {
-    return Column(
+  Widget _buildStatsRow() {
+    int totalEncounters =
+        _contacts.fold(0, (sum, c) => sum + c.encounterCount);
+
+    return Row(
       children: [
-        Icon(icon, color: Colors.white, size: 24),
-        const SizedBox(height: 8),
-        Text(
-          value,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
+        Expanded(
+          child: _StatCard(
+            icon: Icons.people_rounded,
+            value: '${_contacts.length}',
+            label: 'Contacts',
+            color: AppTheme.socialColor,
           ),
         ),
-        Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 11,
+        const SizedBox(width: 12),
+        Expanded(
+          child: _StatCard(
+            icon: Icons.bluetooth_connected_rounded,
+            value: '$totalEncounters',
+            label: 'Rencontres',
+            color: Colors.blue,
           ),
         ),
       ],
     );
   }
 
-  Widget _buildSocialStats() {
-    return Column(
-      children: [
-        Row(
+  Widget _buildContactsList() {
+    if (_contacts.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(40),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: const Column(
           children: [
-            Expanded(
-              child: _StatCard(
-                icon: Icons.trending_up_rounded,
-                value: '+15%',
-                label: 'Cette semaine',
-                color: Colors.green,
-              ),
+            Icon(
+              Icons.bluetooth_disabled_rounded,
+              size: 64,
+              color: Colors.grey,
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _StatCard(
-                icon: Icons.access_time_rounded,
-                value: '2.5h',
-                label: 'Temps social',
-                color: Colors.blue,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: _StatCard(
-                icon: Icons.groups_rounded,
-                value: '24',
-                label: 'Contacts actifs',
-                color: AppTheme.socialColor,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _StatCard(
-                icon: Icons.favorite_rounded,
-                value: '92%',
-                label: 'Satisfaction',
-                color: Colors.red,
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildInteractions() {
-    return Column(
-      children: [
-        _InteractionCard(
-          icon: Icons.chat_bubble_rounded,
-          title: 'Conversation avec Marie',
-          subtitle: 'WhatsApp • 45 min',
-          time: 'Il y a 1h',
-          type: 'Message',
-          color: Colors.green,
-        ),
-        const SizedBox(height: 12),
-        _InteractionCard(
-          icon: Icons.phone_rounded,
-          title: 'Appel avec Papa',
-          subtitle: 'Téléphone • 18 min',
-          time: 'Il y a 3h',
-          type: 'Appel',
-          color: Colors.blue,
-        ),
-        const SizedBox(height: 12),
-        _InteractionCard(
-          icon: Icons.people_rounded,
-          title: 'Déjeuner avec amis',
-          subtitle: 'Restaurant • 1h 30min',
-          time: 'Il y a 5h',
-          type: 'Rencontre',
-          color: AppTheme.socialColor,
-        ),
-        const SizedBox(height: 12),
-        _InteractionCard(
-          icon: Icons.chat_bubble_rounded,
-          title: 'Groupe famille',
-          subtitle: 'Telegram • 12 messages',
-          time: 'Hier',
-          type: 'Message',
-          color: Colors.green,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildMoodAnalysis() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Humeur générale',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textPrimaryColor,
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.green.shade50,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(
-                      Icons.sentiment_very_satisfied_rounded,
-                      size: 16,
-                      color: Colors.green,
-                    ),
-                    SizedBox(width: 4),
-                    Text(
-                      'Positive',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.green,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _MoodIcon(
-                icon: Icons.sentiment_very_satisfied_rounded,
-                label: 'Joyeux',
-                percentage: 65,
-                color: Colors.green,
-              ),
-              _MoodIcon(
-                icon: Icons.sentiment_satisfied_rounded,
-                label: 'Calme',
-                percentage: 25,
-                color: Colors.blue,
-              ),
-              _MoodIcon(
-                icon: Icons.sentiment_neutral_rounded,
-                label: 'Neutre',
-                percentage: 8,
-                color: Colors.orange,
-              ),
-              _MoodIcon(
-                icon: Icons.sentiment_dissatisfied_rounded,
-                label: 'Triste',
-                percentage: 2,
+            SizedBox(height: 16),
+            Text(
+              'Aucun contact détecté',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
                 color: Colors.grey,
               ),
-            ],
-          ),
-        ],
-      ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Lancez un scan pour détecter\nles appareils Bluetooth à proximité',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      children: _contacts.map((contact) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _ContactCard(contact: contact),
+        );
+      }).toList(),
     );
   }
 }
@@ -459,25 +634,15 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-class _InteractionCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String time;
-  final String type;
-  final Color color;
+class _ContactCard extends StatelessWidget {
+  final BluetoothContactModel contact;
 
-  const _InteractionCard({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.time,
-    required this.type,
-    required this.color,
-  });
+  const _ContactCard({required this.contact});
 
   @override
   Widget build(BuildContext context) {
+    final dateFormat = DateFormat('dd/MM/yyyy HH:mm');
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -487,13 +652,17 @@ class _InteractionCard extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
+          CircleAvatar(
+            backgroundColor: AppTheme.socialColor,
+            radius: 24,
+            child: Text(
+              contact.contactName[0].toUpperCase(),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-            child: Icon(icon, color: color, size: 24),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -501,18 +670,25 @@ class _InteractionCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  title,
+                  contact.contactName,
                   style: const TextStyle(
-                    fontSize: 15,
+                    fontSize: 16,
                     fontWeight: FontWeight.w600,
                     color: AppTheme.textPrimaryColor,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  subtitle,
+                  contact.deviceName,
                   style: const TextStyle(
                     fontSize: 12,
+                    color: AppTheme.textSecondaryColor,
+                  ),
+                ),
+                Text(
+                  'Dernière: ${dateFormat.format(contact.lastEncounter)}',
+                  style: const TextStyle(
+                    fontSize: 11,
                     color: AppTheme.textSecondaryColor,
                   ),
                 ),
@@ -524,27 +700,27 @@ class _InteractionCard extends StatelessWidget {
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
+                  horizontal: 10,
                   vertical: 4,
                 ),
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
+                  color: AppTheme.socialColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  type,
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: color,
+                  '${contact.encounterCount}',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.socialColor,
                   ),
                 ),
               ),
               const SizedBox(height: 4),
-              Text(
-                time,
-                style: const TextStyle(
-                  fontSize: 11,
+              const Text(
+                'rencontres',
+                style: TextStyle(
+                  fontSize: 10,
                   color: AppTheme.textSecondaryColor,
                 ),
               ),
@@ -552,46 +728,6 @@ class _InteractionCard extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _MoodIcon extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final int percentage;
-  final Color color;
-
-  const _MoodIcon({
-    required this.icon,
-    required this.label,
-    required this.percentage,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Icon(icon, size: 40, color: color),
-        const SizedBox(height: 8),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 11,
-            color: AppTheme.textSecondaryColor,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          '$percentage%',
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-      ],
     );
   }
 }

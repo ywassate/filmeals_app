@@ -30,17 +30,20 @@ void main() async {
   runApp(MyApp(
     userRepository: userRepository,
     mealRepository: mealRepository,
+    storageService: storageService,
   ));
 }
 
 class MyApp extends StatelessWidget {
   final UserRepository userRepository;
   final MealRepository mealRepository;
+  final LocalStorageService storageService;
 
   const MyApp({
     super.key,
     required this.userRepository,
     required this.mealRepository,
+    required this.storageService,
   });
 
   @override
@@ -49,7 +52,7 @@ class MyApp extends StatelessWidget {
       title: 'HealthSync',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      home: const MainHubScreen(),
+      home: MainHubScreen(storageService: storageService),
     );
   }
 }

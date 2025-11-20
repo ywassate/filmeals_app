@@ -117,6 +117,55 @@ class SocialInteractionModelAdapter
           typeId == other.typeId;
 }
 
+class BluetoothContactModelAdapter extends TypeAdapter<BluetoothContactModel> {
+  @override
+  final int typeId = 20;
+
+  @override
+  BluetoothContactModel read(BinaryReader reader) {
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
+    return BluetoothContactModel(
+      macAddress: fields[0] as String,
+      contactName: fields[1] as String,
+      deviceName: fields[2] as String,
+      firstEncounter: fields[3] as DateTime,
+      lastEncounter: fields[4] as DateTime,
+      encounterCount: fields[5] as int,
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, BluetoothContactModel obj) {
+    writer
+      ..writeByte(6)
+      ..writeByte(0)
+      ..write(obj.macAddress)
+      ..writeByte(1)
+      ..write(obj.contactName)
+      ..writeByte(2)
+      ..write(obj.deviceName)
+      ..writeByte(3)
+      ..write(obj.firstEncounter)
+      ..writeByte(4)
+      ..write(obj.lastEncounter)
+      ..writeByte(5)
+      ..write(obj.encounterCount);
+  }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BluetoothContactModelAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
+}
+
 class InteractionTypeAdapter extends TypeAdapter<InteractionType> {
   @override
   final int typeId = 14;

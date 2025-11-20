@@ -19,6 +19,7 @@ class LocalStorageService {
   static const String socialInteractionsBoxName = 'social_interactions';
   static const String locationSensorBoxName = 'location_sensor';
   static const String locationRecordsBoxName = 'location_records';
+  static const String bluetoothContactsBoxName = 'bluetooth_contacts';
 
   // Boxes
   Box<CentralDataModel>? _centralDataBox;
@@ -30,6 +31,7 @@ class LocalStorageService {
   Box<SocialInteractionModel>? _socialInteractionsBox;
   Box<LocationSensorDataModel>? _locationSensorBox;
   Box<LocationRecordModel>? _locationRecordsBox;
+  Box<BluetoothContactModel>? _bluetoothContactsBox;
 
   /// Initialiser Hive et enregistrer les adapters
   Future<void> init() async {
@@ -96,6 +98,11 @@ class LocalStorageService {
       Hive.registerAdapter(ActivityTypeAdapter());
     }
 
+    // === BLUETOOTH CONTACTS ===
+    if (!Hive.isAdapterRegistered(20)) {
+      Hive.registerAdapter(BluetoothContactModelAdapter());
+    }
+
     // Ouvrir les boxes
     _centralDataBox = await Hive.openBox<CentralDataModel>(centralDataBoxName);
     _mealsSensorBox =
@@ -112,6 +119,8 @@ class LocalStorageService {
         await Hive.openBox<LocationSensorDataModel>(locationSensorBoxName);
     _locationRecordsBox =
         await Hive.openBox<LocationRecordModel>(locationRecordsBoxName);
+    _bluetoothContactsBox =
+        await Hive.openBox<BluetoothContactModel>(bluetoothContactsBoxName);
   }
 
   // === GETTERS ===
@@ -190,6 +199,15 @@ class LocalStorageService {
     return _locationRecordsBox!;
   }
 
+  /// Récupérer la box des contacts Bluetooth
+  Box<BluetoothContactModel> get bluetoothContactsBox {
+    if (_bluetoothContactsBox == null || !_bluetoothContactsBox!.isOpen) {
+      throw Exception(
+          'BluetoothContactsBox not initialized. Call init() first.');
+    }
+    return _bluetoothContactsBox!;
+  }
+
   // === COMPATIBILITY GETTERS (DEPRECATED) ===
   // Pour compatibilité avec l'ancien code
   // TODO: Migrer tout le code vers centralDataBox et mealsBox
@@ -213,6 +231,7 @@ class LocalStorageService {
     await _socialInteractionsBox?.close();
     await _locationSensorBox?.close();
     await _locationRecordsBox?.close();
+    await _bluetoothContactsBox?.close();
   }
 
   /// Effacer toutes les données (pour les tests ou reset)
@@ -226,5 +245,6 @@ class LocalStorageService {
     await _socialInteractionsBox?.clear();
     await _locationSensorBox?.clear();
     await _locationRecordsBox?.clear();
+    await _bluetoothContactsBox?.clear();
   }
 }
