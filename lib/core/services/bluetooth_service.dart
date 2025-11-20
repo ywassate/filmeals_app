@@ -46,6 +46,7 @@ class BluetoothService {
   bool _isScanning = false;
   LocalStorageService? _storageService;
   Timer? _continuousScanTimer;
+  Function(int, int, int)? _onProgressCallback;
 
   // === Tracking temporel ===
   // Durée minimum: 5 minutes (300 secondes)
@@ -60,6 +61,11 @@ class BluetoothService {
   static const Duration _cacheDuration = Duration(hours: 24);
 
   bool get isScanning => _isScanning;
+
+  // Getters pour l'état actuel
+  int get currentTrackedDevices => _temporaryDetections.length;
+  int get currentPendingCount => _getPendingValidCount();
+  int get currentValidatedCount => getAllContacts().length;
 
   /// Initialiser avec le storage service
   void init(LocalStorageService storageService) {
@@ -143,6 +149,7 @@ class BluetoothService {
 
     try {
       _isScanning = true;
+      _onProgressCallback = onProgress; // Sauvegarder le callback
       _temporaryDetections.clear();
       _alreadyFilteredAddresses.clear();
 
@@ -150,14 +157,14 @@ class BluetoothService {
       print('⚠️ Gardez l\'application ouverte pour un scan continu');
 
       // Premier scan immédiat
-      await _performScanCycle(onProgress);
+      await _performScanCycle(_onProgressCallback);
 
       // Configurer le scan périodique toutes les 5 minutes
       _continuousScanTimer = Timer.periodic(
         const Duration(minutes: 5),
         (timer) async {
           if (_isScanning) {
-            await _performScanCycle(onProgress);
+            await _performScanCycle(_onProgressCallback);
           } else {
             timer.cancel();
           }
@@ -169,6 +176,11 @@ class BluetoothService {
       _isScanning = false;
       rethrow;
     }
+  }
+
+  /// Réenregistrer un callback pour recevoir les updates
+  void setProgressCallback(Function(int, int, int)? callback) {
+    _onProgressCallback = callback;
   }
 
   /// Effectuer un cycle de scan complet

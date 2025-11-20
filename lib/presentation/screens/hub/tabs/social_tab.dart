@@ -30,6 +30,47 @@ class _SocialTabState extends State<SocialTab> {
     BluetoothService.instance.init(widget.storageService);
     _checkPermissions();
     _loadContacts();
+    _restoreScanState();
+  }
+
+  /// Restaurer l'état du scan si le service est déjà en cours
+  void _restoreScanState() {
+    // Vérifier si le scan est déjà en cours
+    if (BluetoothService.instance.isScanning) {
+      setState(() {
+        _isScanning = true;
+        _appareilsDetectes = BluetoothService.instance.currentTrackedDevices;
+        _pendingDetections = BluetoothService.instance.currentPendingCount;
+      });
+
+      // Réenregistrer le callback pour recevoir les updates
+      BluetoothService.instance.setProgressCallback((total, pending, validated) {
+        if (mounted) {
+          setState(() {
+            _appareilsDetectes = total;
+            _pendingDetections = pending;
+            _validatedContacts += validated;
+          });
+
+          if (validated > 0) {
+            _loadContacts();
+          }
+        }
+      });
+
+      print('✅ État du scan restauré: $_appareilsDetectes trackés, $_pendingDetections en attente');
+    }
+  }
+
+  @override
+  void dispose() {
+    // Nettoyer le callback quand on quitte le tab (évite les fuites mémoire)
+    // IMPORTANT: Ne pas arrêter le scan, juste désenregistrer le callback
+    if (BluetoothService.instance.isScanning) {
+      BluetoothService.instance.setProgressCallback(null);
+      print('🧹 Callback UI désenregistré (scan continue en arrière-plan)');
+    }
+    super.dispose();
   }
 
   Future<void> _checkPermissions() async {
