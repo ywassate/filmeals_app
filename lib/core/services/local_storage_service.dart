@@ -1,4 +1,5 @@
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive/hive.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:filmeals_app/data/models/central_data_model.dart';
 import 'package:filmeals_app/data/models/meals_sensor_data_model.dart';
 import 'package:filmeals_app/data/models/meal_model.dart';
@@ -9,6 +10,11 @@ import 'package:filmeals_app/data/models/location_sensor_data_model.dart';
 /// Service pour gérer l'initialisation de Hive et l'accès aux boxes
 /// Architecture Multi-Capteurs avec données centralisées
 class LocalStorageService {
+  // Singleton
+  static final LocalStorageService _instance = LocalStorageService._internal();
+  factory LocalStorageService() => _instance;
+  LocalStorageService._internal();
+
   // Box names
   static const String centralDataBoxName = 'central_data';
   static const String mealsSensorBoxName = 'meals_sensor';
@@ -35,7 +41,9 @@ class LocalStorageService {
 
   /// Initialiser Hive et enregistrer les adapters
   Future<void> init() async {
-    await Hive.initFlutter();
+    // Initialiser Hive avec le chemin du répertoire de documents
+    final appDocDir = await getApplicationDocumentsDirectory();
+    Hive.init(appDocDir.path);
 
     // === CENTRAL DATA ===
     if (!Hive.isAdapterRegistered(5)) {

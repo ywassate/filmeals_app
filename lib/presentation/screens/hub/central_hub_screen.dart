@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:filmeals_app/presentation/screens/sleep/sleep_main_screen.dart';
 
 /// Écran principal du Hub Central
 /// Affiche tous les capteurs et permet de naviguer vers chacun
@@ -189,10 +190,13 @@ class _CentralHubBody extends StatelessWidget {
           title: 'Sommeil',
           subtitle: 'Qualité & Durée',
           color: Colors.indigo,
-          isActive: false,
+          isActive: true,
           onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Capteur Sommeil (à venir)')),
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const SleepMainScreen(),
+              ),
             );
           },
         ),

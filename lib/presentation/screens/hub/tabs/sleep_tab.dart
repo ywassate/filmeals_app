@@ -1,8 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
+import 'package:filmeals_app/core/services/notification_service.dart';
+import 'package:filmeals_app/presentation/screens/sleep/sleep_input_dialog.dart';
+import 'package:filmeals_app/presentation/screens/sleep/sleep_history_screen.dart';
 
-class SleepTab extends StatelessWidget {
+class SleepTab extends StatefulWidget {
   const SleepTab({super.key});
+
+  @override
+  State<SleepTab> createState() => _SleepTabState();
+}
+
+class _SleepTabState extends State<SleepTab> {
+  final NotificationService _notificationService = NotificationService();
+  bool _notificationsEnabled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initNotifications();
+  }
+
+  Future<void> _initNotifications() async {
+    try {
+      await _notificationService.init();
+    } catch (e) {
+      print("Erreur d'initialisation des notifications: $e");
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -63,6 +88,33 @@ class SleepTab extends StatelessWidget {
                                   ),
                                 ],
                               ),
+                            ),
+                            IconButton(
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => const SleepHistoryScreen(),
+                                  ),
+                                );
+                              },
+                              icon: const Icon(
+                                Icons.history,
+                                color: Colors.white,
+                              ),
+                              tooltip: 'Historique',
+                            ),
+                            IconButton(
+                              onPressed: () {
+                                _showNotificationSettings(context);
+                              },
+                              icon: Icon(
+                                _notificationsEnabled
+                                    ? Icons.notifications_active
+                                    : Icons.notifications_off,
+                                color: Colors.white,
+                              ),
+                              tooltip: 'Notifications',
                             ),
                           ],
                         ),
@@ -127,6 +179,25 @@ class SleepTab extends StatelessWidget {
             ),
           ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () async {
+          final result = await showDialog<bool>(
+            context: context,
+            builder: (context) => const SleepInputDialog(),
+          );
+          if (result == true && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Nuit enregistrée avec succès !'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+        },
+        backgroundColor: AppTheme.sleepColor,
+        icon: const Icon(Icons.add),
+        label: const Text('Ajouter une nuit'),
       ),
     );
   }
@@ -341,6 +412,126 @@ class SleepTab extends StatelessWidget {
           _HistoryItem(day: 'Il y a 5 jours', hours: 7.8, quality: 'Excellent'),
           _HistoryItem(day: 'Il y a 6 jours', hours: 7.2, quality: 'Bon'),
         ],
+      ),
+    );
+  }
+
+  void _showNotificationSettings(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(
+                    Icons.notifications_active,
+                    color: AppTheme.sleepColor,
+                    size: 28,
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Notifications',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Recevez des rappels quotidiens pour enregistrer votre sommeil',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: AppTheme.textSecondaryColor,
+                ),
+              ),
+              const SizedBox(height: 24),
+              SwitchListTile(
+                title: const Text('Activer les notifications'),
+                subtitle: const Text('Rappels à 22h et 7h'),
+                value: _notificationsEnabled,
+                activeColor: AppTheme.sleepColor,
+                onChanged: (value) async {
+                  if (value) {
+                    await _notificationService.enableNotifications();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Notifications activées !'),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    }
+                  } else {
+                    await _notificationService.cancelAllNotifications();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Notifications désactivées'),
+                          backgroundColor: Colors.orange,
+                        ),
+                      );
+                    }
+                  }
+                  setState(() {
+                    _notificationsEnabled = value;
+                  });
+                  setModalState(() {
+                    _notificationsEnabled = value;
+                  });
+                },
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  try {
+                    await _notificationService.testNotification();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Notification de test envoyée !'),
+                          backgroundColor: Colors.blue,
+                        ),
+                      );
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Erreur: Les notifications ne sont pas disponibles sur cette plateforme'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
+                  }
+                },
+                icon: const Icon(Icons.send),
+                label: const Text('Tester les notifications'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.sleepColor,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(double.infinity, 48),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
       ),
     );
   }
