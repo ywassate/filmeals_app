@@ -3,18 +3,23 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:filmeals_app/data/models/user_model.dart';
 import 'package:filmeals_app/data/models/meal_model.dart';
+import 'package:filmeals_app/data/models/location_sensor_data_model.dart';
 import 'package:filmeals_app/data/repository/user_repository.dart';
 import 'package:filmeals_app/data/repository/meal_repository.dart';
+import 'package:filmeals_app/data/repository/location_repository.dart';
+import 'package:filmeals_app/core/services/mcp_export_location_extension.dart';
 
 /// Service d'export des données vers le serveur MCP
 /// Formate toutes les données collectées pour l'analyse MCP
 class MCPExportService {
   final UserRepository userRepository;
   final MealRepository mealRepository;
+  final LocationRepository locationRepository;
 
   MCPExportService({
     required this.userRepository,
     required this.mealRepository,
+    required this.locationRepository,
   });
 
   /// Exporte toutes les données utilisateur pour le MCP
@@ -25,20 +30,31 @@ class MCPExportService {
     }
 
     final allMeals = await mealRepository.getUserMeals(user.id);
+    final allActivities = await locationRepository.getUserLocationRecords(user.id);
+    final activityStats = await locationRepository.getUserActivityStats(user.id);
 
     return {
-      'schema_version': '1.0',
+      'schema_version': '2.0',
       'export_metadata': {
         'timestamp': DateTime.now().toIso8601String(),
         'app_version': '1.0.0',
         'platform': Platform.operatingSystem,
-        'data_types': ['user_profile', 'meals', 'daily_aggregates', 'behavioral_insights'],
+        'data_types': [
+          'user_profile',
+          'meals',
+          'daily_aggregates',
+          'behavioral_insights',
+          'physical_activities',
+          'activity_profile'
+        ],
       },
       'user_profile': _formatUserProfile(user),
       'meals': _formatMeals(allMeals),
       'daily_aggregates': _calculateDailyAggregates(user, allMeals),
       'behavioral_insights': _analyzeBehavioralInsights(user, allMeals),
       'progress_tracking': _trackProgress(user, allMeals),
+      'physical_activities': _formatPhysicalActivities(allActivities),
+      'activity_profile': _analyzeActivityProfile(allActivities, activityStats, user),
     };
   }
 
@@ -320,5 +336,19 @@ class MCPExportService {
       'adherence_rate': daysTracked > 0 ? (daysCompliant / daysTracked) : 0.0,
       'ready_for_export': allMeals.isNotEmpty,
     };
+  }
+
+  /// Formate les activités physiques pour le MCP
+  List<Map<String, dynamic>> _formatPhysicalActivities(List<LocationRecordModel> activities) {
+    return MCPExportLocationExtension.formatPhysicalActivities(activities);
+  }
+
+  /// Analyse le profil d'activité physique
+  Map<String, dynamic> _analyzeActivityProfile(
+    List<LocationRecordModel> activities,
+    Map<String, dynamic> stats,
+    UserModel user,
+  ) {
+    return MCPExportLocationExtension.analyzeActivityProfile(activities, stats, user);
   }
 }

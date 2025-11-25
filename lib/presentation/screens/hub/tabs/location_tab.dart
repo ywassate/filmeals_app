@@ -1,8 +1,105 @@
 import 'package:flutter/material.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
+import 'package:filmeals_app/data/repository/location_repository.dart';
+import 'package:filmeals_app/core/services/local_storage_service.dart';
+import 'package:filmeals_app/data/models/location_sensor_data_model.dart';
+import 'package:filmeals_app/data/models/central_data_model.dart';
+import 'package:filmeals_app/presentation/screens/tracking/live_tracking_screen.dart';
+import 'package:filmeals_app/presentation/screens/tracking/activity_detail_screen.dart';
+import 'package:intl/intl.dart';
 
-class LocationTab extends StatelessWidget {
+class LocationTab extends StatefulWidget {
   const LocationTab({super.key});
+
+  @override
+  State<LocationTab> createState() => _LocationTabState();
+}
+
+class _LocationTabState extends State<LocationTab> {
+  final LocationRepository _locationRepository = LocationRepository();
+  late final LocalStorageService _storage;
+
+  List<LocationRecordModel> _recentActivities = [];
+  Map<String, dynamic> _stats = {};
+  bool _isLoading = true;
+  String? _userId;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    await _initStorage();
+    await _loadData();
+  }
+
+  Future<void> _initStorage() async {
+    _storage = LocalStorageService();
+    await _storage.init();
+  }
+
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+
+    var user = _storage.centralDataBox.get('currentUser');
+    if (user == null) {
+      // Créer un utilisateur par défaut si aucun n'existe
+      final now = DateTime.now();
+      final defaultUser = CentralDataModel(
+        id: 'user_${now.millisecondsSinceEpoch}',
+        name: 'Utilisateur',
+        email: 'user@example.com',
+        age: 25,
+        gender: 'male',
+        height: 170,
+        weight: 70,
+        profilePictureUrl: '',
+        createdAt: now,
+        updatedAt: now,
+        activeSensors: ['location'],
+      );
+      await _storage.centralDataBox.put('currentUser', defaultUser);
+      user = defaultUser;
+    }
+
+    if (user != null) {
+      _userId = user.id;
+      _recentActivities = await _locationRepository.getRecentActivities(user.id, 30);
+      _stats = await _locationRepository.getUserActivityStats(user.id);
+    }
+
+    setState(() => _isLoading = false);
+  }
+
+  void _startTracking() {
+    if (_userId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Erreur: Utilisateur non initialisé'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => LiveTrackingScreen(userId: _userId!),
+      ),
+    ).then((_) => _loadData()); // Recharger après retour
+  }
+
+  void _viewActivityDetail(LocationRecordModel activity) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ActivityDetailScreen(activity: activity),
+      ),
+    ).then((_) => _loadData()); // Recharger après retour
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -76,58 +173,91 @@ class LocationTab extends StatelessWidget {
 
           // Contenu
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Résumé quotidien
-                  _buildDailySummary(),
-                  const SizedBox(height: 24),
+            child: _isLoading
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(40),
+                      child: CircularProgressIndicator(),
+                    ),
+                  )
+                : Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Bouton démarrer
+                        _buildStartButton(),
+                        const SizedBox(height: 24),
 
-                  // Objectifs
-                  const Text(
-                    'Objectifs du jour',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimaryColor,
+                        // Statistiques globales
+                        if ((_stats['total_activities'] ?? 0) > 0) ...[
+                          _buildGlobalStats(),
+                          const SizedBox(height: 32),
+                        ],
+
+                        // Activités récentes
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Activités récentes',
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: AppTheme.textPrimaryColor,
+                              ),
+                            ),
+                            if (_recentActivities.isNotEmpty)
+                              Text(
+                                '${_recentActivities.length} activités',
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  color: AppTheme.textSecondaryColor,
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        _buildActivities(),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  _buildGoals(),
-                  const SizedBox(height: 32),
-
-                  // Activités récentes
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Activités récentes',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textPrimaryColor,
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () {},
-                        child: const Text('Voir tout'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  _buildActivities(),
-                ],
-              ),
-            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildDailySummary() {
+  Widget _buildStartButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: _startTracking,
+        icon: const Icon(Icons.play_arrow_rounded, size: 28),
+        label: const Text(
+          'Démarrer une activité',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: AppTheme.locationColor,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGlobalStats() {
+    final totalDistance = (_stats['total_distance_km'] as double).toStringAsFixed(1);
+    final totalActivities = _stats['total_activities'];
+    final byType = _stats['by_type'] as Map<String, dynamic>;
+
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
@@ -142,361 +272,279 @@ class LocationTab extends StatelessWidget {
         ],
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildSummaryItem(
-                Icons.directions_walk_rounded,
-                '8,247',
-                'Pas',
-              ),
-              Container(
-                width: 1,
-                height: 40,
-                color: Colors.white.withOpacity(0.2),
-              ),
-              _buildSummaryItem(
-                Icons.local_fire_department_rounded,
-                '387',
-                'kcal',
-              ),
-              Container(
-                width: 1,
-                height: 40,
-                color: Colors.white.withOpacity(0.2),
-              ),
-              _buildSummaryItem(
-                Icons.straighten_rounded,
-                '6.2',
-                'km',
-              ),
-            ],
+          const Text(
+            'Ce mois-ci',
+            style: TextStyle(
+              color: Colors.white70,
+              fontSize: 14,
+            ),
           ),
-          const SizedBox(height: 20),
-          // Progress bar
-          Column(
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'Objectif: 10,000 pas',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
+                  Text(
+                    '$totalDistance km',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                   Text(
-                    '82%',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.9),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                    '$totalActivities activités',
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: LinearProgressIndicator(
-                  value: 0.82,
-                  minHeight: 8,
-                  backgroundColor: Colors.white.withOpacity(0.2),
-                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSummaryItem(IconData icon, String value, String label) {
-    return Column(
-      children: [
-        Icon(icon, color: Colors.white, size: 28),
-        const SizedBox(height: 8),
-        Text(
-          value,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 24,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 12,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildGoals() {
-    return Column(
-      children: [
-        _GoalCard(
-          icon: Icons.directions_walk_rounded,
-          title: 'Pas quotidiens',
-          current: 8247,
-          goal: 10000,
-          unit: 'pas',
-          color: AppTheme.locationColor,
-        ),
-        const SizedBox(height: 12),
-        _GoalCard(
-          icon: Icons.local_fire_department_rounded,
-          title: 'Calories brûlées',
-          current: 387,
-          goal: 500,
-          unit: 'kcal',
-          color: Colors.orange,
-        ),
-        const SizedBox(height: 12),
-        _GoalCard(
-          icon: Icons.timer_rounded,
-          title: 'Minutes actives',
-          current: 45,
-          goal: 60,
-          unit: 'min',
-          color: Colors.blue,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildActivities() {
-    return Column(
-      children: [
-        _ActivityCard(
-          icon: Icons.directions_run_rounded,
-          title: 'Course à pied',
-          subtitle: 'Parc central',
-          distance: '5.2 km',
-          duration: '32 min',
-          calories: '285 kcal',
-          time: 'Il y a 2h',
-          color: Colors.red,
-        ),
-        const SizedBox(height: 12),
-        _ActivityCard(
-          icon: Icons.directions_bike_rounded,
-          title: 'Vélo',
-          subtitle: 'Piste cyclable',
-          distance: '12.8 km',
-          duration: '45 min',
-          calories: '420 kcal',
-          time: 'Hier',
-          color: Colors.blue,
-        ),
-        const SizedBox(height: 12),
-        _ActivityCard(
-          icon: Icons.directions_walk_rounded,
-          title: 'Marche',
-          subtitle: 'Centre-ville',
-          distance: '3.5 km',
-          duration: '48 min',
-          calories: '180 kcal',
-          time: 'Il y a 2 jours',
-          color: Colors.green,
-        ),
-      ],
-    );
-  }
-}
-
-class _GoalCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final int current;
-  final int goal;
-  final String unit;
-  final Color color;
-
-  const _GoalCard({
-    required this.icon,
-    required this.title,
-    required this.current,
-    required this.goal,
-    required this.unit,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final progress = current / goal;
-    final percentage = (progress * 100).toInt();
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
               Container(
-                padding: const EdgeInsets.all(10),
+                padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textPrimaryColor,
-                  ),
-                ),
-              ),
-              Text(
-                '$percentage%',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: color,
+                child: const Icon(
+                  Icons.trending_up_rounded,
+                  color: Colors.white,
+                  size: 32,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                '$current $unit',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: color,
-                ),
-              ),
-              Text(
-                '/ $goal $unit',
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: AppTheme.textSecondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: LinearProgressIndicator(
-              value: progress,
-              minHeight: 8,
-              backgroundColor: color.withOpacity(0.1),
-              valueColor: AlwaysStoppedAnimation<Color>(color),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ActivityCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final String distance;
-  final String duration;
-  final String calories;
-  final String time;
-  final Color color;
-
-  const _ActivityCard({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.distance,
-    required this.duration,
-    required this.calories,
-    required this.time,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+          if (byType.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            const Divider(color: Colors.white24),
+            const SizedBox(height: 12),
+            ...byType.entries.take(3).map((entry) {
+              final type = _getActivityTypeFromString(entry.key);
+              final data = entry.value as Map<String, dynamic>;
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
                   children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textPrimaryColor,
+                    Icon(
+                      _getActivityIcon(type),
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _getActivityText(type),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                        ),
                       ),
                     ),
                     Text(
-                      subtitle,
+                      '${data['count']} fois',
                       style: const TextStyle(
+                        color: Colors.white70,
                         fontSize: 12,
-                        color: AppTheme.textSecondaryColor,
                       ),
                     ),
                   ],
                 ),
+              );
+            }),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActivities() {
+    if (_recentActivities.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(40),
+        decoration: BoxDecoration(
+          color: Colors.grey[100],
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          children: [
+            Icon(
+              Icons.directions_run_rounded,
+              size: 64,
+              color: Colors.grey[400],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Aucune activité enregistrée',
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w600,
               ),
-              Text(
-                time,
-                style: const TextStyle(
-                  fontSize: 11,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Commencez à tracker vos déplacements',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey[500],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      children: _recentActivities.map((activity) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _ActivityCard(
+            activity: activity,
+            onTap: () => _viewActivityDetail(activity),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  ActivityType _getActivityTypeFromString(String typeString) {
+    return ActivityType.values.firstWhere(
+      (e) => e.toString().split('.').last == typeString,
+      orElse: () => ActivityType.other,
+    );
+  }
+
+  IconData _getActivityIcon(ActivityType type) {
+    switch (type) {
+      case ActivityType.walking:
+        return Icons.directions_walk_rounded;
+      case ActivityType.running:
+        return Icons.directions_run_rounded;
+      case ActivityType.cycling:
+        return Icons.directions_bike_rounded;
+      case ActivityType.driving:
+        return Icons.directions_car_rounded;
+      case ActivityType.stationary:
+        return Icons.chair_rounded;
+      case ActivityType.other:
+        return Icons.location_on_rounded;
+    }
+  }
+
+  String _getActivityText(ActivityType type) {
+    switch (type) {
+      case ActivityType.walking:
+        return 'Marche';
+      case ActivityType.running:
+        return 'Course';
+      case ActivityType.cycling:
+        return 'Vélo';
+      case ActivityType.driving:
+        return 'Transport';
+      case ActivityType.stationary:
+        return 'Immobile';
+      case ActivityType.other:
+        return 'Autre';
+    }
+  }
+}
+
+class _ActivityCard extends StatelessWidget {
+  final LocationRecordModel activity;
+  final VoidCallback onTap;
+
+  const _ActivityCard({
+    required this.activity,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _getActivityColor().withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    _getActivityIcon(),
+                    color: _getActivityColor(),
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _getActivityText(),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.textPrimaryColor,
+                        ),
+                      ),
+                      Text(
+                        DateFormat('dd MMM yyyy • HH:mm', 'fr_FR')
+                            .format(activity.startTime),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppTheme.textSecondaryColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.chevron_right_rounded,
                   color: AppTheme.textSecondaryColor,
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              _buildStatChip(Icons.straighten_rounded, distance),
-              const SizedBox(width: 8),
-              _buildStatChip(Icons.timer_rounded, duration),
-              const SizedBox(width: 8),
-              _buildStatChip(Icons.local_fire_department_rounded, calories),
-            ],
-          ),
-        ],
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _buildStatChip(
+                  Icons.straighten_rounded,
+                  '${activity.distanceKm.toStringAsFixed(1)} km',
+                ),
+                const SizedBox(width: 8),
+                _buildStatChip(
+                  Icons.timer_rounded,
+                  '${activity.durationMinutes} min',
+                ),
+                if (activity.stepsCount > 0) ...[
+                  const SizedBox(width: 8),
+                  _buildStatChip(
+                    Icons.directions_walk_rounded,
+                    '${activity.stepsCount} pas',
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -505,24 +553,75 @@ class _ActivityCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: AppTheme.locationColor.withOpacity(0.1),
+        color: _getActivityColor().withOpacity(0.1),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: AppTheme.locationColor),
+          Icon(icon, size: 14, color: _getActivityColor()),
           const SizedBox(width: 4),
           Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w600,
-              color: AppTheme.locationColor,
+              color: _getActivityColor(),
             ),
           ),
         ],
       ),
     );
+  }
+
+  Color _getActivityColor() {
+    switch (activity.activityType) {
+      case ActivityType.walking:
+        return Colors.green;
+      case ActivityType.running:
+        return Colors.red;
+      case ActivityType.cycling:
+        return Colors.blue;
+      case ActivityType.driving:
+        return Colors.orange;
+      case ActivityType.stationary:
+        return Colors.grey;
+      case ActivityType.other:
+        return AppTheme.locationColor;
+    }
+  }
+
+  IconData _getActivityIcon() {
+    switch (activity.activityType) {
+      case ActivityType.walking:
+        return Icons.directions_walk_rounded;
+      case ActivityType.running:
+        return Icons.directions_run_rounded;
+      case ActivityType.cycling:
+        return Icons.directions_bike_rounded;
+      case ActivityType.driving:
+        return Icons.directions_car_rounded;
+      case ActivityType.stationary:
+        return Icons.chair_rounded;
+      case ActivityType.other:
+        return Icons.location_on_rounded;
+    }
+  }
+
+  String _getActivityText() {
+    switch (activity.activityType) {
+      case ActivityType.walking:
+        return 'Marche';
+      case ActivityType.running:
+        return 'Course';
+      case ActivityType.cycling:
+        return 'Vélo';
+      case ActivityType.driving:
+        return 'Transport';
+      case ActivityType.stationary:
+        return 'Immobile';
+      case ActivityType.other:
+        return 'Autre';
+    }
   }
 }
