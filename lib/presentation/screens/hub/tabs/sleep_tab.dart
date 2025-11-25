@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
 import 'package:filmeals_app/core/services/notification_service.dart';
+import 'package:filmeals_app/core/services/local_storage_service.dart';
+import 'package:filmeals_app/data/models/sleep_sensor_data_model.dart';
 import 'package:filmeals_app/presentation/screens/sleep/sleep_input_dialog.dart';
 import 'package:filmeals_app/presentation/screens/sleep/sleep_history_screen.dart';
 
@@ -13,12 +15,15 @@ class SleepTab extends StatefulWidget {
 
 class _SleepTabState extends State<SleepTab> {
   final NotificationService _notificationService = NotificationService();
+  final LocalStorageService _storageService = LocalStorageService();
   bool _notificationsEnabled = false;
+  List<SleepRecordModel> _recentSleepRecords = [];
 
   @override
   void initState() {
     super.initState();
     _initNotifications();
+    _loadSleepData();
   }
 
   Future<void> _initNotifications() async {
@@ -26,6 +31,19 @@ class _SleepTabState extends State<SleepTab> {
       await _notificationService.init();
     } catch (e) {
       print("Erreur d'initialisation des notifications: $e");
+    }
+  }
+
+  Future<void> _loadSleepData() async {
+    try {
+      final records = _storageService.sleepRecordsBox.values.toList();
+      // Trier par date décroissante et prendre les 7 derniers
+      records.sort((a, b) => b.bedTime.compareTo(a.bedTime));
+      setState(() {
+        _recentSleepRecords = records.take(7).toList();
+      });
+    } catch (e) {
+      print('❌ Erreur lors du chargement: $e');
     }
   }
 
@@ -187,6 +205,7 @@ class _SleepTabState extends State<SleepTab> {
             builder: (context) => const SleepInputDialog(),
           );
           if (result == true && mounted) {
+            await _loadSleepData(); // Recharger les données
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('Nuit enregistrée avec succès !'),
@@ -195,7 +214,7 @@ class _SleepTabState extends State<SleepTab> {
             );
           }
         },
-        backgroundColor: AppTheme.sleepColor,
+        backgroundColor: Colors.indigo,
         icon: const Icon(Icons.add),
         label: const Text('Ajouter une nuit'),
       ),
@@ -395,6 +414,44 @@ class _SleepTabState extends State<SleepTab> {
   }
 
   Widget _buildHistory() {
+    if (_recentSleepRecords.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(32),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppTheme.borderColor),
+        ),
+        child: Column(
+          children: [
+            Icon(
+              Icons.history,
+              size: 48,
+              color: Colors.grey[400],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Aucun historique',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey[600],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Enregistrez vos nuits pour voir l\'historique',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey[500],
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -403,17 +460,42 @@ class _SleepTabState extends State<SleepTab> {
         border: Border.all(color: AppTheme.borderColor),
       ),
       child: Column(
-        children: [
-          _HistoryItem(day: 'Aujourd\'hui', hours: 7.5, quality: 'Excellent'),
-          _HistoryItem(day: 'Hier', hours: 6.8, quality: 'Bon'),
-          _HistoryItem(day: 'Il y a 2 jours', hours: 8.2, quality: 'Excellent'),
-          _HistoryItem(day: 'Il y a 3 jours', hours: 7.0, quality: 'Bon'),
-          _HistoryItem(day: 'Il y a 4 jours', hours: 6.5, quality: 'Moyen'),
-          _HistoryItem(day: 'Il y a 5 jours', hours: 7.8, quality: 'Excellent'),
-          _HistoryItem(day: 'Il y a 6 jours', hours: 7.2, quality: 'Bon'),
-        ],
+        children: _recentSleepRecords.asMap().entries.map((entry) {
+          final index = entry.key;
+          final record = entry.value;
+          final now = DateTime.now();
+          final difference = now.difference(record.bedTime).inDays;
+
+          String dayLabel;
+          if (difference == 0) {
+            dayLabel = 'Aujourd\'hui';
+          } else if (difference == 1) {
+            dayLabel = 'Hier';
+          } else {
+            dayLabel = 'Il y a $difference jours';
+          }
+
+          return _HistoryItem(
+            day: dayLabel,
+            hours: record.durationHours,
+            quality: _getQualityText(record.quality),
+          );
+        }).toList(),
       ),
     );
+  }
+
+  String _getQualityText(SleepQuality quality) {
+    switch (quality) {
+      case SleepQuality.poor:
+        return 'Mauvais';
+      case SleepQuality.fair:
+        return 'Moyen';
+      case SleepQuality.good:
+        return 'Bon';
+      case SleepQuality.excellent:
+        return 'Excellent';
+    }
   }
 
   void _showNotificationSettings(BuildContext context) {
@@ -672,8 +754,10 @@ class _HistoryItem extends StatelessWidget {
         return Colors.blue;
       case 'Moyen':
         return Colors.orange;
-      default:
+      case 'Mauvais':
         return Colors.red;
+      default:
+        return Colors.grey;
     }
   }
 
