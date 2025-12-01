@@ -80,36 +80,38 @@ class ActivityNotificationService {
     final typeText = _getActivityText(detectedType);
     final stats = _formatStats(activity);
 
+    // Style minimaliste pour Android
     const androidDetails = AndroidNotificationDetails(
       'activity_detection',
       'Détection d\'activité',
       channelDescription: 'Notifications pour confirmer les activités détectées',
       importance: Importance.high,
       priority: Priority.high,
+      styleInformation: BigTextStyleInformation(''),
       actions: <AndroidNotificationAction>[
         AndroidNotificationAction(
           'confirm',
-          '✓ Correct',
+          'Confirmer',
           showsUserInterface: true,
         ),
         AndroidNotificationAction(
           'walking',
-          '🚶 Marche',
+          'Marche',
           showsUserInterface: true,
         ),
         AndroidNotificationAction(
           'running',
-          '🏃 Course',
+          'Course',
           showsUserInterface: true,
         ),
         AndroidNotificationAction(
           'cycling',
-          '🚴 Vélo',
+          'Vélo',
           showsUserInterface: true,
         ),
         AndroidNotificationAction(
           'driving',
-          '🚌 Transport',
+          'Transport',
           showsUserInterface: true,
         ),
       ],
@@ -128,8 +130,8 @@ class ActivityNotificationService {
 
     await _notificationsPlugin.show(
       activityId.hashCode,
-      '$emoji $typeText détecté',
-      stats,
+      '$typeText détecté',
+      '$emoji $stats',
       notificationDetails,
       payload: '$activityId:${detectedType.toString().split('.').last}',
     );

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:filmeals_app/core/widgets/minimal_snackbar.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
@@ -30,11 +31,11 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> {
   final MapController _mapController = MapController();
 
   bool _isTracking = false;
+  bool _isLoadingLocation = true;
   double _distance = 0.0;
   double _speed = 0.0;
   int _duration = 0;
   int _steps = 0;
-  ActivityType _currentActivityType = ActivityType.other;
   LatLng? _currentPosition;
   List<LatLng> _routePoints = [];
 
@@ -45,6 +46,31 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> {
     super.initState();
     _setupCallbacks();
     _notificationService.initialize();
+    _getCurrentLocation();
+  }
+
+  Future<void> _getCurrentLocation() async {
+    try {
+      final position = await _gpsService.getCurrentPosition();
+      if (position != null && mounted) {
+        setState(() {
+          _currentPosition = LatLng(position.latitude, position.longitude);
+          _isLoadingLocation = false;
+        });
+        _mapController.move(_currentPosition!, 16);
+      } else if (mounted) {
+        setState(() {
+          _isLoadingLocation = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingLocation = false;
+        });
+      }
+      debugPrint('Erreur lors de la récupération de la position: $e');
+    }
   }
 
   void _setupCallbacks() {
@@ -109,11 +135,11 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> {
     final record = await _gpsService.stopTracking(widget.userId);
     if (record == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Activité trop courte, non enregistrée.'),
-          ),
-        );
+        MinimalSnackBar.showInfo(
+        context,
+        title: 'Info',
+        message: 'Activité trop courte, non enregistrée.',
+      );
       }
       setState(() {
         _isTracking = false;
@@ -148,7 +174,6 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> {
           content: Text(
             'Activité enregistrée ! ${_getActivityText(detectedType)} détecté.',
           ),
-          backgroundColor: Colors.green,
         ),
       );
       Navigator.pop(context);
@@ -181,254 +206,372 @@ class _LiveTrackingScreenState extends State<LiveTrackingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoadingLocation) {
+      return Scaffold(
+        backgroundColor: AppTheme.backgroundColor,
+        body: const Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(AppTheme.textPrimaryColor),
+            strokeWidth: 2,
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
-      body: Stack(
+      backgroundColor: AppTheme.backgroundColor,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header minimaliste
+                _buildHeader(),
+                const SizedBox(height: 40),
+
+                // Statut
+                Text(
+                  _isTracking ? 'TRACKING' : 'READY',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: AppTheme.textSecondaryColor,
+                    letterSpacing: 0.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 32),
+
+                // Stats principales
+                _buildMinimalStats(),
+                const SizedBox(height: 40),
+
+                // Map
+                const Text(
+                  'Route',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimaryColor,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                _buildMapCard(),
+                const SizedBox(height: 40),
+
+                // Détails
+                const Text(
+                  'Details',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textPrimaryColor,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                _buildProgressBars(),
+                const SizedBox(height: 40),
+
+                // Bouton
+                _buildButton(),
+                const SizedBox(height: 20),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        const Text(
+          'Live Tracking',
+          style: TextStyle(
+            fontSize: 36,
+            fontWeight: FontWeight.w700,
+            color: AppTheme.textPrimaryColor,
+            letterSpacing: -1.5,
+          ),
+        ),
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: AppTheme.surfaceColor,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: IconButton(
+            icon: const Icon(
+              Icons.close,
+              color: AppTheme.textPrimaryColor,
+              size: 20,
+            ),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMinimalStats() {
+    return Row(
+      children: [
+        Expanded(
+          child: _MinimalStatCard(
+            value: _distance.toStringAsFixed(2),
+            label: 'KM',
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: _MinimalStatCard(
+            value: '$_duration',
+            label: 'MIN',
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: _MinimalStatCard(
+            value: _speed.toStringAsFixed(1),
+            label: 'KM/H',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMapCard() {
+    return Container(
+      height: 280,
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: _currentPosition == null
+          ? Center(
+              child: Text(
+                'Map will appear when tracking starts',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppTheme.textSecondaryColor.withOpacity(0.6),
+                ),
+              ),
+            )
+          : FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: _currentPosition!,
+                initialZoom: 16.0,
+                interactionOptions: const InteractionOptions(
+                  flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+                ),
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+                  subdomains: const ['a', 'b', 'c', 'd'],
+                  userAgentPackageName: 'com.filmeals.app',
+                ),
+                if (_routePoints.length > 1)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: _routePoints,
+                        color: AppTheme.textPrimaryColor,
+                        strokeWidth: 3.0,
+                      ),
+                    ],
+                  ),
+                if (_currentPosition != null)
+                  MarkerLayer(
+                    markers: [
+                      Marker(
+                        point: _currentPosition!,
+                        width: 12,
+                        height: 12,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: AppTheme.textPrimaryColor,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildProgressBars() {
+    return Column(
+      children: [
+        _ProgressItem(
+          label: 'Steps',
+          value: '$_steps',
+          total: '10,000',
+          percentage: _steps / 10000,
+        ),
+        const SizedBox(height: 20),
+        _ProgressItem(
+          label: 'Calories',
+          value: '${(_distance * 60).toInt()}',
+          total: '500',
+          percentage: (_distance * 60) / 500,
+        ),
+        const SizedBox(height: 20),
+        _ProgressItem(
+          label: 'Pace',
+          value: _speed > 0 ? '${(60 / _speed).toStringAsFixed(1)}' : '0.0',
+          total: 'min/km',
+          percentage: 0.0,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 52,
+      child: TextButton(
+        onPressed: _isTracking ? _stopTracking : _startTracking,
+        style: TextButton.styleFrom(
+          backgroundColor: AppTheme.textPrimaryColor,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        child: Text(
+          _isTracking ? 'Stop Tracking' : 'Start Tracking',
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MinimalStatCard extends StatelessWidget {
+  final String value;
+  final String label;
+
+  const _MinimalStatCard({
+    required this.value,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Carte
-          _buildMap(),
-
-          // Stats overlay
-          _buildStatsOverlay(),
-
-          // Boutons de contrôle
-          _buildControlButtons(),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textPrimaryColor,
+              letterSpacing: -1,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textSecondaryColor,
+              letterSpacing: 1,
+            ),
+          ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildMap() {
-    return FlutterMap(
-      mapController: _mapController,
-      options: MapOptions(
-        initialCenter: _currentPosition ?? const LatLng(48.8566, 2.3522), // Paris par défaut
-        initialZoom: 16.0,
-      ),
+class _ProgressItem extends StatelessWidget {
+  final String label;
+  final String value;
+  final String total;
+  final double percentage;
+
+  const _ProgressItem({
+    required this.label,
+    required this.value,
+    required this.total,
+    required this.percentage,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          userAgentPackageName: 'com.filmeals.app',
-        ),
-        // Ligne de la trajectoire
-        if (_routePoints.length > 1)
-          PolylineLayer(
-            polylines: [
-              Polyline(
-                points: _routePoints,
-                color: AppTheme.locationColor,
-                strokeWidth: 4.0,
-              ),
-            ],
-          ),
-        // Marqueur position actuelle
-        if (_currentPosition != null)
-          MarkerLayer(
-            markers: [
-              Marker(
-                point: _currentPosition!,
-                width: 40,
-                height: 40,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: AppTheme.locationColor,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 3),
-                  ),
-                  child: const Icon(
-                    Icons.navigation,
-                    color: Colors.white,
-                    size: 20,
-                  ),
-                ),
-              ),
-            ],
-          ),
-      ],
-    );
-  }
-
-  Widget _buildStatsOverlay() {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            // Header
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  _buildStatItem(
-                    Icons.straighten_rounded,
-                    '${_distance.toStringAsFixed(2)} km',
-                    'Distance',
-                  ),
-                  Container(width: 1, height: 40, color: AppTheme.borderColor),
-                  _buildStatItem(
-                    Icons.timer_rounded,
-                    _formatDuration(_duration),
-                    'Durée',
-                  ),
-                  Container(width: 1, height: 40, color: AppTheme.borderColor),
-                  _buildStatItem(
-                    Icons.speed_rounded,
-                    '${_speed.toStringAsFixed(1)} km/h',
-                    'Vitesse',
-                  ),
-                ],
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.textPrimaryColor,
               ),
             ),
-            const SizedBox(height: 12),
-            // Compteur de pas
-            if (_steps > 0)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.directions_walk_rounded,
-                      color: AppTheme.locationColor,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '$_steps pas',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: AppTheme.textPrimaryColor,
-                      ),
-                    ),
-                  ],
-                ),
+            Text(
+              '$value / $total',
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppTheme.textSecondaryColor,
+                fontWeight: FontWeight.w500,
               ),
+            ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildStatItem(IconData icon, String value, String label) {
-    return Column(
-      children: [
-        Icon(icon, color: AppTheme.locationColor, size: 24),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: AppTheme.textPrimaryColor,
-          ),
-        ),
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 11,
-            color: AppTheme.textSecondaryColor,
-          ),
+        const SizedBox(height: 12),
+        Stack(
+          children: [
+            Container(
+              height: 6,
+              decoration: BoxDecoration(
+                color: AppTheme.borderColor,
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ),
+            FractionallySizedBox(
+              widthFactor: percentage.clamp(0.0, 1.0),
+              child: Container(
+                height: 6,
+                decoration: BoxDecoration(
+                  color: AppTheme.textPrimaryColor,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
-  }
-
-  Widget _buildControlButtons() {
-    return Positioned(
-      bottom: 40,
-      left: 0,
-      right: 0,
-      child: Center(
-        child: _isTracking
-            ? ElevatedButton(
-                onPressed: _stopTracking,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 48,
-                    vertical: 16,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.stop, size: 28),
-                    SizedBox(width: 8),
-                    Text(
-                      'Arrêter',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            : ElevatedButton(
-                onPressed: _startTracking,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.locationColor,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 48,
-                    vertical: 16,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.play_arrow, size: 28),
-                    SizedBox(width: 8),
-                    Text(
-                      'Démarrer',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-      ),
-    );
-  }
-
-  String _formatDuration(int minutes) {
-    final hours = minutes ~/ 60;
-    final mins = minutes % 60;
-    if (hours > 0) {
-      return '${hours}h ${mins}min';
-    }
-    return '${mins}min';
   }
 }

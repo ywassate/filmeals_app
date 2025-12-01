@@ -1,11 +1,21 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:filmeals_app/core/widgets/minimal_snackbar.dart';
+import 'package:filmeals_app/core/widgets/page_banner.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
+import 'package:filmeals_app/core/services/gps_tracking_service.dart';
+import 'package:filmeals_app/core/services/activity_detection_service.dart';
+import 'package:filmeals_app/core/services/activity_notification_service.dart';
 import 'package:filmeals_app/data/repository/location_repository.dart';
-import 'package:filmeals_app/core/services/local_storage_service.dart';
 import 'package:filmeals_app/data/models/location_sensor_data_model.dart';
+import 'package:filmeals_app/core/services/local_storage_service.dart';
 import 'package:filmeals_app/data/models/central_data_model.dart';
-import 'package:filmeals_app/presentation/screens/tracking/live_tracking_screen.dart';
 import 'package:filmeals_app/presentation/screens/tracking/activity_detail_screen.dart';
+import 'package:filmeals_app/presentation/screens/tracking/activity_history_screen.dart';
+import 'package:filmeals_app/presentation/screens/tracking/activity_weekly_stats_screen.dart';
 import 'package:intl/intl.dart';
 
 class LocationTab extends StatefulWidget {
@@ -15,24 +25,62 @@ class LocationTab extends StatefulWidget {
   State<LocationTab> createState() => _LocationTabState();
 }
 
-class _LocationTabState extends State<LocationTab> {
-  final LocationRepository _locationRepository = LocationRepository();
+class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClientMixin {
+  final GpsTrackingService _gpsService = GpsTrackingService();
+  final ActivityDetectionService _detectionService = ActivityDetectionService();
+  final ActivityNotificationService _notificationService = ActivityNotificationService();
+  final LocationRepository _repository = LocationRepository();
+  final MapController _mapController = MapController();
   late final LocalStorageService _storage;
 
+  bool _isTracking = false;
+  bool _isPaused = false;
+  bool _isLoadingLocation = true;
+  bool _isInitialized = false;
+  double _distance = 0.0;
+  double _speed = 0.0;
+  int _duration = 0;
+  int _steps = 0;
+  DateTime? _startTime;
+  Duration _elapsed = Duration.zero;
+  Duration _pausedDuration = Duration.zero;
+  DateTime? _pauseStartTime;
+  LatLng? _currentPosition;
+  List<LatLng> _routePoints = [];
+
+  // Stats globales et historique
   List<LocationRecordModel> _recentActivities = [];
   Map<String, dynamic> _stats = {};
-  bool _isLoading = true;
   String? _userId;
+  Timer? _timer;
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    _init();
+    if (!_isInitialized) {
+      _init();
+      _isInitialized = true;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Recharger les données quand on revient sur cette page
+    if (mounted && _isInitialized) {
+      _loadData();
+    }
   }
 
   Future<void> _init() async {
     await _initStorage();
     await _loadData();
+    _setupCallbacks();
+    _notificationService.initialize();
+    _getCurrentLocation();
   }
 
   Future<void> _initStorage() async {
@@ -41,11 +89,9 @@ class _LocationTabState extends State<LocationTab> {
   }
 
   Future<void> _loadData() async {
-    setState(() => _isLoading = true);
-
+    // Get user ID from centralDataBox (same as TestDataService)
     var user = _storage.centralDataBox.get('currentUser');
     if (user == null) {
-      // Créer un utilisateur par défaut si aucun n'existe
       final now = DateTime.now();
       final defaultUser = CentralDataModel(
         id: 'user_${now.millisecondsSinceEpoch}',
@@ -64,32 +110,210 @@ class _LocationTabState extends State<LocationTab> {
       user = defaultUser;
     }
 
-    if (user != null) {
-      _userId = user.id;
-      _recentActivities = await _locationRepository.getRecentActivities(user.id, 30);
-      _stats = await _locationRepository.getUserActivityStats(user.id);
-    }
+    _userId = user.id;
+    print('👤 LocationTab using user ID: $_userId');
 
-    setState(() => _isLoading = false);
+    _recentActivities = await _repository.getRecentActivities(user.id, 10);
+    _stats = await _repository.getUserActivityStats(user.id);
+
+    if (mounted) setState(() {});
   }
 
-  void _startTracking() {
+  Future<void> _getCurrentLocation() async {
+    try {
+      final position = await _gpsService.getCurrentPosition();
+      if (position != null && mounted) {
+        setState(() {
+          _currentPosition = LatLng(position.latitude, position.longitude);
+          _isLoadingLocation = false;
+        });
+        // Wait for the map to be ready before moving
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _currentPosition != null) {
+            try {
+              _mapController.move(_currentPosition!, 16);
+            } catch (e) {
+              debugPrint('MapController not ready yet: $e');
+            }
+          }
+        });
+      } else if (mounted) {
+        setState(() {
+          _isLoadingLocation = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingLocation = false;
+        });
+      }
+      debugPrint('Erreur lors de la récupération de la position: $e');
+    }
+  }
+
+  void _setupCallbacks() {
+    _gpsService.onLocationUpdate = (locationPoint) {
+      if (mounted) {
+        setState(() {
+          _currentPosition = LatLng(
+            locationPoint.latitude,
+            locationPoint.longitude,
+          );
+          _routePoints.add(_currentPosition!);
+        });
+        try {
+          _mapController.move(_currentPosition!, 16);
+        } catch (e) {
+          debugPrint('MapController not ready during tracking: $e');
+        }
+      }
+    };
+
+    _gpsService.onStatsUpdate = (distance, speed) {
+      if (mounted) {
+        setState(() {
+          _distance = distance;
+          _speed = speed;
+        });
+      }
+    };
+
+    _gpsService.onStepUpdate = (steps) {
+      if (mounted) {
+        setState(() {
+          _steps = steps;
+        });
+      }
+    };
+  }
+
+  Future<void> _startTracking() async {
     if (_userId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Erreur: Utilisateur non initialisé'),
-          backgroundColor: Colors.red,
-        ),
+      MinimalSnackBar.showError(
+        context,
+        title: 'Erreur',
+        message: 'Erreur: Utilisateur non initialisé',
       );
       return;
     }
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => LiveTrackingScreen(userId: _userId!),
-      ),
-    ).then((_) => _loadData()); // Recharger après retour
+    final started = await _gpsService.startTracking();
+    if (!started) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Impossible d\'accéder au GPS. Vérifiez les permissions.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _isTracking = true;
+      _distance = 0.0;
+      _speed = 0.0;
+      _duration = 0;
+      _steps = 0;
+      _startTime = DateTime.now();
+      _elapsed = Duration.zero;
+      _routePoints.clear();
+    });
+
+    // Timer ultra fluide - se met à jour toutes les 30ms pour un affichage très smooth
+    _timer = Timer.periodic(const Duration(milliseconds: 30), (timer) {
+      if (mounted && _startTime != null && !_isPaused) {
+        setState(() {
+          _elapsed = DateTime.now().difference(_startTime!) - _pausedDuration;
+          // Mettre à jour les stats GPS moins souvent (toutes les secondes via le service)
+          _duration = _gpsService.getDuration();
+          _speed = _gpsService.getAverageSpeed();
+          _distance = _gpsService.getTotalDistance();
+        });
+      }
+    });
+  }
+
+  void _togglePause() {
+    setState(() {
+      _isPaused = !_isPaused;
+      if (_isPaused) {
+        // Mettre en pause
+        _pauseStartTime = DateTime.now();
+      } else {
+        // Reprendre
+        if (_pauseStartTime != null) {
+          _pausedDuration += DateTime.now().difference(_pauseStartTime!);
+          _pauseStartTime = null;
+        }
+      }
+    });
+  }
+
+  Future<void> _stopTracking() async {
+    _timer?.cancel();
+    _startTime = null;
+
+    final record = await _gpsService.stopTracking(_userId!);
+    if (record == null) {
+      // Pas de données GPS collectées, arrêt silencieux
+      setState(() {
+        _isTracking = false;
+      });
+      return;
+    }
+
+    // Détecter le type d'activité
+    final analysis = _detectionService.analyzeActivity(record);
+    final detectedType = analysis['activityType'] as ActivityType;
+    final confidence = analysis['confidence'] as double;
+
+    // Sauvegarder avec le type détecté
+    final updatedRecord = record.copyWith(activityType: detectedType);
+    await _repository.saveLocationRecord(updatedRecord);
+
+    // Envoyer notification de confirmation
+    await _notificationService.sendActivityConfirmation(
+      activityId: record.id,
+      activity: updatedRecord,
+      detectedType: detectedType,
+      confidence: confidence,
+    );
+
+    setState(() {
+      _isTracking = false;
+    });
+
+    // Recharger les données
+    await _loadData();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Activité enregistrée ! ${_getActivityText(detectedType)} détecté.',
+          ),
+        ),
+      );
+    }
+  }
+
+  String _getActivityText(ActivityType type) {
+    switch (type) {
+      case ActivityType.walking:
+        return 'Marche';
+      case ActivityType.running:
+        return 'Course';
+      case ActivityType.cycling:
+        return 'Vélo';
+      case ActivityType.driving:
+        return 'Transport';
+      case ActivityType.stationary:
+        return 'Immobile';
+      case ActivityType.other:
+        return 'Activité';
+    }
   }
 
   void _viewActivityDetail(LocationRecordModel activity) {
@@ -98,266 +322,710 @@ class _LocationTabState extends State<LocationTab> {
       MaterialPageRoute(
         builder: (context) => ActivityDetailScreen(activity: activity),
       ),
-    ).then((_) => _loadData()); // Recharger après retour
+    ).then((_) => _loadData());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _gpsService.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // Important pour AutomaticKeepAliveClientMixin
+
+    if (_isLoadingLocation) {
+      return const Scaffold(
+        backgroundColor: AppTheme.backgroundColor,
+        body: Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(AppTheme.textPrimaryColor),
+            strokeWidth: 2,
+          ),
+        ),
+      );
+    }
+
+    // Mode Tracking : Carte plein écran
+    if (_isTracking) {
+      return _buildTrackingMode();
+    }
+
+    // Mode Normal : Vue avec historique
     return Scaffold(
-      body: CustomScrollView(
-        physics: const BouncingScrollPhysics(),
-        slivers: [
-          // App Bar
-          SliverAppBar(
-            expandedHeight: 180,
-            floating: false,
-            pinned: true,
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                decoration: const BoxDecoration(
-                  gradient: AppTheme.locationGradient,
+      backgroundColor: AppTheme.backgroundColor,
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Header fixe avec icônes
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Activity',
+                    style: TextStyle(
+                      fontSize: 36,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textPrimaryColor,
+                      letterSpacing: -1.5,
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      // Bouton Historique
+                      IconButton(
+                        onPressed: () {
+                          if (_userId != null) {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => ActivityHistoryScreen(userId: _userId!),
+                              ),
+                            ).then((_) => _loadData());
+                          }
+                        },
+                        icon: const Icon(
+                          Icons.history_rounded,
+                          color: AppTheme.textPrimaryColor,
+                          size: 24,
+                        ),
+                      ),
+                      // Bouton Stats
+                      IconButton(
+                        onPressed: () {
+                          if (_userId != null) {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => ActivityWeeklyStatsScreen(
+                                  storageService: _storage,
+                                  userId: _userId!,
+                                ),
+                              ),
+                            ).then((_) => _loadData());
+                          }
+                        },
+                        icon: const Icon(
+                          Icons.bar_chart_rounded,
+                          color: AppTheme.textPrimaryColor,
+                          size: 24,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Contenu scrollable
+            Expanded(
+              child: SingleChildScrollView(
+                physics: const BouncingScrollPhysics(),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 16, 24, 100),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Date
+                      Text(
+                        _getFormattedDate(),
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: AppTheme.textSecondaryColor,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+
+                      // Bannière
+                      PageBanner(
+                        title: 'Stay Active',
+                        subtitle: 'Keep moving every day',
+                        gradient: const LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [Color(0xFF667eea), Color(0xFF764ba2)],
+                        ),
+                        imagePath: 'assets/images/carousel/active.png',
+                      ),
+                      const SizedBox(height: 32),
+
+                      // Stats globales (historique)
+                      if ((_stats['total_activities'] ?? 0) > 0) ...[
+                        _buildGlobalStats(),
+                        const SizedBox(height: 40),
+                      ],
+
+                      // Bouton Start
+                      _buildButton(),
+                      const SizedBox(height: 40),
+
+                      // Historique des activités
+                      const Text(
+                        'Recent Activities',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textPrimaryColor,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      _buildActivities(),
+                    ],
+                  ),
                 ),
-                child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.end,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTrackingMode() {
+    return Scaffold(
+      backgroundColor: AppTheme.backgroundColor,
+      body: Stack(
+        children: [
+          // Carte plein écran
+          _buildFullScreenMap(),
+
+          // Overlay avec timer et stats en haut
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              child: Container(
+                margin: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.95),
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 20,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    // Timer principal
+                    _buildTimer(),
+                    const SizedBox(height: 24),
+                    // Divider
+                    Container(
+                      height: 1,
+                      color: AppTheme.borderColor.withOpacity(0.3),
+                    ),
+                    const SizedBox(height: 24),
+                    // Stats en ligne
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
                       children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: const Icon(
-                                Icons.location_on_rounded,
-                                color: Colors.white,
-                                size: 32,
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            const Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Activité',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  Text(
-                                    'Suivez vos déplacements',
-                                    style: TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
+                        _buildCompactStat(
+                          value: _distance.toStringAsFixed(2),
+                          label: 'KM',
+                        ),
+                        Container(
+                          width: 1,
+                          height: 40,
+                          color: AppTheme.borderColor,
+                        ),
+                        _buildCompactStat(
+                          value: _speed.toStringAsFixed(1),
+                          label: 'KM/H',
+                        ),
+                        Container(
+                          width: 1,
+                          height: 40,
+                          color: AppTheme.borderColor,
+                        ),
+                        _buildCompactStat(
+                          value: '$_steps',
+                          label: 'STEPS',
                         ),
                       ],
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
           ),
 
-          // Contenu
-          SliverToBoxAdapter(
-            child: _isLoading
-                ? const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(40),
-                      child: CircularProgressIndicator(),
-                    ),
-                  )
-                : Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Bouton démarrer
-                        _buildStartButton(),
-                        const SizedBox(height: 24),
-
-                        // Statistiques globales
-                        if ((_stats['total_activities'] ?? 0) > 0) ...[
-                          _buildGlobalStats(),
-                          const SizedBox(height: 32),
+          // Boutons Pause et Stop en bas
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Row(
+                  children: [
+                    // Bouton Pause/Play
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.95),
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 20,
+                            offset: const Offset(0, 4),
+                          ),
                         ],
-
-                        // Activités récentes
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              'Activités récentes',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                                color: AppTheme.textPrimaryColor,
-                              ),
+                      ),
+                      child: IconButton(
+                        onPressed: _togglePause,
+                        icon: Icon(
+                          _isPaused ? Icons.play_arrow : Icons.pause,
+                          color: AppTheme.textPrimaryColor,
+                          size: 28,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    // Bouton Stop
+                    Expanded(
+                      child: SizedBox(
+                        height: 56,
+                        child: TextButton(
+                          onPressed: _stopTracking,
+                          style: TextButton.styleFrom(
+                            backgroundColor: Colors.red,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
                             ),
-                            if (_recentActivities.isNotEmpty)
+                          ),
+                          child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.stop, size: 24),
+                              SizedBox(width: 8),
                               Text(
-                                '${_recentActivities.length} activités',
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  color: AppTheme.textSecondaryColor,
+                                'Stop Tracking',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.5,
                                 ),
                               ),
-                          ],
+                            ],
+                          ),
                         ),
-                        const SizedBox(height: 16),
-                        _buildActivities(),
-                      ],
+                      ),
                     ),
-                  ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildStartButton() {
-    return SizedBox(
-      width: double.infinity,
-      child: ElevatedButton.icon(
-        onPressed: _startTracking,
-        icon: const Icon(Icons.play_arrow_rounded, size: 28),
-        label: const Text(
-          'Démarrer une activité',
+  Widget _buildTimer() {
+    final hours = _elapsed.inHours;
+    final minutes = _elapsed.inMinutes % 60;
+    final seconds = _elapsed.inSeconds % 60;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        // Pulsing dot indicator avec animation
+        TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0.0, end: 1.0),
+          duration: const Duration(milliseconds: 1000),
+          builder: (context, value, child) {
+            return Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                color: Colors.red,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.red.withOpacity(0.5 * value),
+                    blurRadius: 8 + (4 * value),
+                    spreadRadius: 2 * value,
+                  ),
+                ],
+              ),
+            );
+          },
+          onEnd: () {
+            if (_isTracking && mounted) {
+              setState(() {}); // Relance l'animation
+            }
+          },
+        ),
+        const SizedBox(width: 16),
+        // Timer digits avec animation
+        if (hours > 0) ...[
+          _buildAnimatedTimerDigit(hours.toString().padLeft(2, '0'), isLarge: true),
+          const Text(
+            ':',
+            style: TextStyle(
+              fontSize: 40,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textPrimaryColor,
+            ),
+          ),
+        ],
+        _buildAnimatedTimerDigit(minutes.toString().padLeft(2, '0'), isLarge: true),
+        const Text(
+          ':',
           style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
+            fontSize: 40,
+            fontWeight: FontWeight.w700,
+            color: AppTheme.textPrimaryColor,
           ),
         ),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: AppTheme.locationColor,
-          foregroundColor: Colors.white,
-          padding: const EdgeInsets.symmetric(vertical: 18),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+        _buildAnimatedTimerDigit(seconds.toString().padLeft(2, '0'), isLarge: true),
+      ],
+    );
+  }
+
+  Widget _buildAnimatedTimerDigit(String digit, {required bool isLarge}) {
+    final fontSize = isLarge ? 40.0 : 32.0;
+    final padding = isLarge
+        ? const EdgeInsets.symmetric(horizontal: 12, vertical: 8)
+        : const EdgeInsets.symmetric(horizontal: 8, vertical: 6);
+
+    // Séparer les deux chiffres pour animer seulement celui qui change
+    final digit1 = digit.length > 1 ? digit[0] : '0';
+    final digit2 = digit.length > 1 ? digit[1] : digit[0];
+
+    return Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        color: AppTheme.textPrimaryColor.withOpacity(isLarge ? 0.08 : 0.05),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Premier chiffre
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 150),
+            transitionBuilder: (child, animation) {
+              return FadeTransition(
+                opacity: animation,
+                child: child,
+              );
+            },
+            child: Text(
+              digit1,
+              key: ValueKey('digit1_$digit1'),
+              style: TextStyle(
+                fontSize: fontSize,
+                fontWeight: FontWeight.w700,
+                color: isLarge ? AppTheme.textPrimaryColor : AppTheme.textSecondaryColor,
+                letterSpacing: -2,
+                fontFeatures: const [
+                  FontFeature.tabularFigures(),
+                ],
+              ),
+            ),
           ),
-        ),
+          // Deuxième chiffre
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 150),
+            transitionBuilder: (child, animation) {
+              return FadeTransition(
+                opacity: animation,
+                child: child,
+              );
+            },
+            child: Text(
+              digit2,
+              key: ValueKey('digit2_$digit2'),
+              style: TextStyle(
+                fontSize: fontSize,
+                fontWeight: FontWeight.w700,
+                color: isLarge ? AppTheme.textPrimaryColor : AppTheme.textSecondaryColor,
+                letterSpacing: -2,
+                fontFeatures: const [
+                  FontFeature.tabularFigures(),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
+  }
+
+  Widget _buildCompactStat({required String value, required String label}) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 400),
+      transitionBuilder: (child, animation) {
+        return ScaleTransition(
+          scale: animation,
+          child: FadeTransition(
+            opacity: animation,
+            child: child,
+          ),
+        );
+      },
+      child: Column(
+        key: ValueKey(value),
+        children: [
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textPrimaryColor,
+              letterSpacing: -1,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textSecondaryColor,
+              letterSpacing: 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFullScreenMap() {
+    return _currentPosition == null
+        ? Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(AppTheme.textPrimaryColor),
+                  strokeWidth: 2,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Getting GPS location...',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppTheme.textSecondaryColor.withOpacity(0.6),
+                  ),
+                ),
+              ],
+            ),
+          )
+        : FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: _currentPosition!,
+              initialZoom: 16.0,
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+              ),
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.filmeals.app',
+                maxNativeZoom: 19,
+              ),
+              if (_routePoints.length > 1)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: _routePoints,
+                      color: AppTheme.textPrimaryColor,
+                      strokeWidth: 4.0,
+                    ),
+                  ],
+                ),
+              if (_currentPosition != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: _currentPosition!,
+                      width: 16,
+                      height: 16,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 3),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.red.withOpacity(0.5),
+                              blurRadius: 10,
+                              spreadRadius: 2,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          );
+  }
+
+  Widget _buildCurrentStats() {
+    return Row(
+      children: [
+        Expanded(
+          child: _MinimalStatCard(
+            value: _distance.toStringAsFixed(2),
+            label: 'KM',
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: _MinimalStatCard(
+            value: '$_duration',
+            label: 'MIN',
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: _MinimalStatCard(
+            value: _speed.toStringAsFixed(1),
+            label: 'KM/H',
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _getFormattedDate() {
+    final now = DateTime.now();
+    final weekdays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+    final months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+    return '${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}';
   }
 
   Widget _buildGlobalStats() {
     final totalDistance = (_stats['total_distance_km'] as double).toStringAsFixed(1);
     final totalActivities = _stats['total_activities'];
-    final byType = _stats['by_type'] as Map<String, dynamic>;
 
+    return Row(
+      children: [
+        Expanded(
+          child: _MinimalStatCard(
+            value: totalDistance,
+            label: 'TOTAL KM',
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: _MinimalStatCard(
+            value: '$totalActivities',
+            label: 'ACTIVITIES',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMapCard() {
     return Container(
-      padding: const EdgeInsets.all(24),
+      height: 400,
       decoration: BoxDecoration(
-        gradient: AppTheme.locationGradient,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.locationColor.withOpacity(0.3),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
-          ),
-        ],
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Ce mois-ci',
-            style: TextStyle(
-              color: Colors.white70,
-              fontSize: 14,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '$totalDistance km',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Text(
-                    '$totalActivities activités',
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 14,
-                    ),
-                  ),
-                ],
-              ),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Icon(
-                  Icons.trending_up_rounded,
-                  color: Colors.white,
-                  size: 32,
+      clipBehavior: Clip.antiAlias,
+      child: _currentPosition == null
+          ? Center(
+              child: Text(
+                'Map will appear when GPS is ready',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppTheme.textSecondaryColor.withOpacity(0.6),
                 ),
               ),
-            ],
-          ),
-          if (byType.isNotEmpty) ...[
-            const SizedBox(height: 20),
-            const Divider(color: Colors.white24),
-            const SizedBox(height: 12),
-            ...byType.entries.take(3).map((entry) {
-              final type = _getActivityTypeFromString(entry.key);
-              final data = entry.value as Map<String, dynamic>;
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    Icon(
-                      _getActivityIcon(type),
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        _getActivityText(type),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
+            )
+          : FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: _currentPosition!,
+                initialZoom: 16.0,
+                interactionOptions: const InteractionOptions(
+                  flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+                ),
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+                  subdomains: const ['a', 'b', 'c', 'd'],
+                  userAgentPackageName: 'com.filmeals.app',
+                ),
+                if (_routePoints.length > 1)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: _routePoints,
+                        color: AppTheme.textPrimaryColor,
+                        strokeWidth: 3.0,
+                      ),
+                    ],
+                  ),
+                if (_currentPosition != null)
+                  MarkerLayer(
+                    markers: [
+                      Marker(
+                        point: _currentPosition!,
+                        width: 12,
+                        height: 12,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: AppTheme.textPrimaryColor,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
                         ),
                       ),
-                    ),
-                    Text(
-                      '${data['count']} fois',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }),
-          ],
-        ],
+                    ],
+                  ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 52,
+      child: TextButton(
+        onPressed: _isTracking ? _stopTracking : _startTracking,
+        style: TextButton.styleFrom(
+          backgroundColor: _isTracking ? Colors.red : AppTheme.textPrimaryColor,
+          foregroundColor: Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        child: Text(
+          _isTracking ? 'Stop Tracking' : 'Start Tracking',
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
       ),
     );
   }
@@ -367,31 +1035,31 @@ class _LocationTabState extends State<LocationTab> {
       return Container(
         padding: const EdgeInsets.all(40),
         decoration: BoxDecoration(
-          color: Colors.grey[100],
+          color: AppTheme.surfaceColor,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Column(
           children: [
             Icon(
               Icons.directions_run_rounded,
-              size: 64,
-              color: Colors.grey[400],
+              size: 48,
+              color: AppTheme.textSecondaryColor.withOpacity(0.4),
             ),
             const SizedBox(height: 16),
             Text(
-              'Aucune activité enregistrée',
+              'No activities yet',
               style: TextStyle(
-                fontSize: 16,
-                color: Colors.grey[600],
-                fontWeight: FontWeight.w600,
+                fontSize: 15,
+                color: AppTheme.textSecondaryColor.withOpacity(0.7),
+                fontWeight: FontWeight.w500,
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Commencez à tracker vos déplacements',
+              'Start tracking your movements',
               style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey[500],
+                fontSize: 13,
+                color: AppTheme.textSecondaryColor.withOpacity(0.5),
               ),
             ),
           ],
@@ -411,46 +1079,50 @@ class _LocationTabState extends State<LocationTab> {
       }).toList(),
     );
   }
+}
 
-  ActivityType _getActivityTypeFromString(String typeString) {
-    return ActivityType.values.firstWhere(
-      (e) => e.toString().split('.').last == typeString,
-      orElse: () => ActivityType.other,
+class _MinimalStatCard extends StatelessWidget {
+  final String value;
+  final String label;
+
+  const _MinimalStatCard({
+    required this.value,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textPrimaryColor,
+              letterSpacing: -1,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textSecondaryColor,
+              letterSpacing: 1,
+            ),
+          ),
+        ],
+      ),
     );
-  }
-
-  IconData _getActivityIcon(ActivityType type) {
-    switch (type) {
-      case ActivityType.walking:
-        return Icons.directions_walk_rounded;
-      case ActivityType.running:
-        return Icons.directions_run_rounded;
-      case ActivityType.cycling:
-        return Icons.directions_bike_rounded;
-      case ActivityType.driving:
-        return Icons.directions_car_rounded;
-      case ActivityType.stationary:
-        return Icons.chair_rounded;
-      case ActivityType.other:
-        return Icons.location_on_rounded;
-    }
-  }
-
-  String _getActivityText(ActivityType type) {
-    switch (type) {
-      case ActivityType.walking:
-        return 'Marche';
-      case ActivityType.running:
-        return 'Course';
-      case ActivityType.cycling:
-        return 'Vélo';
-      case ActivityType.driving:
-        return 'Transport';
-      case ActivityType.stationary:
-        return 'Immobile';
-      case ActivityType.other:
-        return 'Autre';
-    }
   }
 }
 
@@ -471,26 +1143,18 @@ class _ActivityCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: AppTheme.surfaceColor,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppTheme.borderColor),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: _getActivityColor().withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(
-                    _getActivityIcon(),
-                    color: _getActivityColor(),
-                    size: 24,
-                  ),
+                Icon(
+                  _getActivityIcon(),
+                  color: AppTheme.textPrimaryColor,
+                  size: 20,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -500,47 +1164,51 @@ class _ActivityCard extends StatelessWidget {
                       Text(
                         _getActivityText(),
                         style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
                           color: AppTheme.textPrimaryColor,
                         ),
                       ),
                       Text(
                         DateFormat('dd MMM yyyy • HH:mm', 'fr_FR')
                             .format(activity.startTime),
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12,
-                          color: AppTheme.textSecondaryColor,
+                          color: AppTheme.textSecondaryColor.withOpacity(0.7),
                         ),
                       ),
                     ],
                   ),
                 ),
-                const Icon(
+                Icon(
                   Icons.chevron_right_rounded,
-                  color: AppTheme.textSecondaryColor,
+                  color: AppTheme.textSecondaryColor.withOpacity(0.5),
+                  size: 20,
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
             Row(
               children: [
-                _buildStatChip(
-                  Icons.straighten_rounded,
-                  '${activity.distanceKm.toStringAsFixed(1)} km',
-                ),
-                const SizedBox(width: 8),
-                _buildStatChip(
-                  Icons.timer_rounded,
-                  '${activity.durationMinutes} min',
-                ),
-                if (activity.stepsCount > 0) ...[
-                  const SizedBox(width: 8),
-                  _buildStatChip(
-                    Icons.directions_walk_rounded,
-                    '${activity.stepsCount} pas',
+                Expanded(
+                  child: _buildStatItem(
+                    '${activity.distanceKm.toStringAsFixed(1)} km',
+                    'Distance',
                   ),
-                ],
+                ),
+                Expanded(
+                  child: _buildStatItem(
+                    '${activity.durationMinutes} min',
+                    'Duration',
+                  ),
+                ),
+                if (activity.stepsCount > 0)
+                  Expanded(
+                    child: _buildStatItem(
+                      '${activity.stepsCount}',
+                      'Steps',
+                    ),
+                  ),
               ],
             ),
           ],
@@ -549,46 +1217,29 @@ class _ActivityCard extends StatelessWidget {
     );
   }
 
-  Widget _buildStatChip(IconData icon, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: _getActivityColor().withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: _getActivityColor()),
-          const SizedBox(width: 4),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: _getActivityColor(),
-            ),
+  Widget _buildStatItem(String value, String label) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: AppTheme.textPrimaryColor,
           ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            color: AppTheme.textSecondaryColor.withOpacity(0.6),
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
     );
-  }
-
-  Color _getActivityColor() {
-    switch (activity.activityType) {
-      case ActivityType.walking:
-        return Colors.green;
-      case ActivityType.running:
-        return Colors.red;
-      case ActivityType.cycling:
-        return Colors.blue;
-      case ActivityType.driving:
-        return Colors.orange;
-      case ActivityType.stationary:
-        return Colors.grey;
-      case ActivityType.other:
-        return AppTheme.locationColor;
-    }
   }
 
   IconData _getActivityIcon() {
@@ -611,17 +1262,17 @@ class _ActivityCard extends StatelessWidget {
   String _getActivityText() {
     switch (activity.activityType) {
       case ActivityType.walking:
-        return 'Marche';
+        return 'Walking';
       case ActivityType.running:
-        return 'Course';
+        return 'Running';
       case ActivityType.cycling:
-        return 'Vélo';
+        return 'Cycling';
       case ActivityType.driving:
         return 'Transport';
       case ActivityType.stationary:
-        return 'Immobile';
+        return 'Stationary';
       case ActivityType.other:
-        return 'Autre';
+        return 'Other';
     }
   }
 }

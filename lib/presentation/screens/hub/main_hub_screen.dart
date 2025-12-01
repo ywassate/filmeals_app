@@ -19,18 +19,18 @@ class MainHubScreen extends StatefulWidget {
 
 class _MainHubScreenState extends State<MainHubScreen>
     with SingleTickerProviderStateMixin {
-  int _currentIndex = 0;
+  int _currentIndex = 2; // Start on Home tab (center position)
   late PageController _pageController;
   late List<Widget> _tabs;
 
   @override
   void initState() {
     super.initState();
-    _pageController = PageController();
+    _pageController = PageController(initialPage: 2); // Start on Home tab (center)
     _tabs = [
-      const HomeTab(),
-      const MealsTab(),
-      const SleepTab(),
+      MealsTab(storageService: widget.storageService),
+      SleepTab(storageService: widget.storageService),
+      HomeTab(storageService: widget.storageService),
       const LocationTab(),
       SocialTab(storageService: widget.storageService),
     ];
@@ -59,63 +59,69 @@ class _MainHubScreenState extends State<MainHubScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: PageView(
-        controller: _pageController,
-        onPageChanged: _onPageChanged,
-        physics: const BouncingScrollPhysics(),
-        children: _tabs,
-      ),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 20,
-              offset: const Offset(0, -5),
-            ),
-          ],
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _buildNavItem(
-                  icon: Icons.home_rounded,
-                  label: 'Accueil',
-                  index: 0,
-                  gradient: AppTheme.primaryGradient,
+      body: Stack(
+        children: [
+          // Contenu des pages
+          PageView(
+            controller: _pageController,
+            onPageChanged: _onPageChanged,
+            physics: const BouncingScrollPhysics(),
+            children: _tabs,
+          ),
+          // Floating tab bar
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 16,
+            child: Container(
+              height: 70,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(35),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.3),
+                    blurRadius: 20,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _buildNavItem(
+                      icon: Icons.restaurant_rounded,
+                      label: 'Meals',
+                      index: 0,
+                    ),
+                    _buildNavItem(
+                      icon: Icons.bedtime_rounded,
+                      label: 'Sleep',
+                      index: 1,
+                    ),
+                    _buildNavItem(
+                      icon: Icons.home_rounded,
+                      label: 'Home',
+                      index: 2,
+                    ),
+                    _buildNavItem(
+                      icon: Icons.location_on_rounded,
+                      label: 'Activity',
+                      index: 3,
+                    ),
+                    _buildNavItem(
+                      icon: Icons.people_rounded,
+                      label: 'Social',
+                      index: 4,
+                    ),
+                  ],
                 ),
-                _buildNavItem(
-                  icon: Icons.restaurant_rounded,
-                  label: 'Repas',
-                  index: 1,
-                  gradient: AppTheme.mealsGradient,
-                ),
-                _buildNavItem(
-                  icon: Icons.bedtime_rounded,
-                  label: 'Sommeil',
-                  index: 2,
-                  gradient: AppTheme.sleepGradient,
-                ),
-                _buildNavItem(
-                  icon: Icons.location_on_rounded,
-                  label: 'Location',
-                  index: 3,
-                  gradient: AppTheme.locationGradient,
-                ),
-                _buildNavItem(
-                  icon: Icons.people_rounded,
-                  label: 'Social',
-                  index: 4,
-                  gradient: AppTheme.socialGradient,
-                ),
-              ],
+              ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -124,7 +130,6 @@ class _MainHubScreenState extends State<MainHubScreen>
     required IconData icon,
     required String label,
     required int index,
-    required LinearGradient gradient,
   }) {
     final isSelected = _currentIndex == index;
 
@@ -132,49 +137,27 @@ class _MainHubScreenState extends State<MainHubScreen>
       child: GestureDetector(
         onTap: () => _onTabTapped(index),
         behavior: HitTestBehavior.opaque,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: EdgeInsets.all(isSelected ? 8 : 6),
-                decoration: BoxDecoration(
-                  gradient: isSelected ? gradient : null,
-                  color: isSelected ? null : Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: isSelected
-                      ? [
-                          BoxShadow(
-                            color: gradient.colors.first.withOpacity(0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
-                          ),
-                        ]
-                      : null,
-                ),
-                child: Icon(
-                  icon,
-                  size: isSelected ? 26 : 24,
-                  color: isSelected ? Colors.white : AppTheme.textSecondaryColor,
-                ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Icône sans cadre
+            Icon(
+              icon,
+              size: 26,
+              color: isSelected ? Colors.white : Colors.white.withOpacity(0.5),
+            ),
+            const SizedBox(height: 4),
+            // Label en anglais
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: isSelected ? Colors.white : Colors.white.withOpacity(0.5),
               ),
-              const SizedBox(height: 4),
-              AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 200),
-                style: TextStyle(
-                  fontSize: isSelected ? 11 : 10,
-                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
-                  color: isSelected
-                      ? gradient.colors.first
-                      : AppTheme.textSecondaryColor,
-                ),
-                child: Text(label),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

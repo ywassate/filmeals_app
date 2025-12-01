@@ -4,9 +4,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:filmeals_app/data/models/user_model.dart';
 import 'package:filmeals_app/data/models/meal_model.dart';
 import 'package:filmeals_app/data/models/location_sensor_data_model.dart';
+import 'package:filmeals_app/data/models/meals_sensor_data_model.dart';
+import 'package:filmeals_app/data/models/sleep_sensor_data_model.dart';
+import 'package:filmeals_app/data/models/social_sensor_data_model.dart';
 import 'package:filmeals_app/data/repository/user_repository.dart';
 import 'package:filmeals_app/data/repository/meal_repository.dart';
 import 'package:filmeals_app/data/repository/location_repository.dart';
+import 'package:filmeals_app/core/services/local_storage_service.dart';
 import 'package:filmeals_app/core/services/mcp_export_location_extension.dart';
 
 /// Service d'export des données vers le serveur MCP
@@ -15,11 +19,13 @@ class MCPExportService {
   final UserRepository userRepository;
   final MealRepository mealRepository;
   final LocationRepository locationRepository;
+  final LocalStorageService storageService;
 
   MCPExportService({
     required this.userRepository,
     required this.mealRepository,
     required this.locationRepository,
+    required this.storageService,
   });
 
   /// Exporte toutes les données utilisateur pour le MCP
@@ -33,8 +39,14 @@ class MCPExportService {
     final allActivities = await locationRepository.getUserLocationRecords(user.id);
     final activityStats = await locationRepository.getUserActivityStats(user.id);
 
+    // Get sensor data
+    final mealsSensorData = storageService.mealsSensorBox.get(user.id);
+    final sleepSensorData = storageService.sleepSensorBox.get(user.id);
+    final socialSensorData = storageService.socialSensorBox.get(user.id);
+    final locationSensorData = storageService.locationSensorBox.values.where((l) => l.userId == user.id).toList();
+
     return {
-      'schema_version': '2.0',
+      'schema_version': '3.0',
       'export_metadata': {
         'timestamp': DateTime.now().toIso8601String(),
         'app_version': '1.0.0',
@@ -45,7 +57,8 @@ class MCPExportService {
           'daily_aggregates',
           'behavioral_insights',
           'physical_activities',
-          'activity_profile'
+          'activity_profile',
+          'sensor_data',
         ],
       },
       'user_profile': _formatUserProfile(user),
@@ -55,6 +68,12 @@ class MCPExportService {
       'progress_tracking': _trackProgress(user, allMeals),
       'physical_activities': _formatPhysicalActivities(allActivities),
       'activity_profile': _analyzeActivityProfile(allActivities, activityStats, user),
+      'sensor_data': {
+        'meals_sensor': _formatMealsSensorData(mealsSensorData),
+        'sleep_sensor': _formatSleepSensorData(sleepSensorData),
+        'social_sensor': _formatSocialSensorData(socialSensorData),
+        'location_sensor': _formatLocationSensorData(locationSensorData),
+      },
     };
   }
 
@@ -144,9 +163,7 @@ class MCPExportService {
           'carbs_g': totalCarbs,
           'fat_g': totalFat,
         },
-        'goals_achievement': {
-          'calories_percent': calorieGoalAchievement,
-        },
+        'goals_achievement': {'calories_percent': calorieGoalAchievement},
         'meals_count': dayMeals.length,
         'meal_types': dayMeals
             .map((m) => m.mealType.toString().split('.').last)
@@ -217,9 +234,9 @@ class MCPExportService {
       };
     }
 
-    final firstMealDate = meals.map((m) => m.date).reduce(
-          (a, b) => a.isBefore(b) ? a : b,
-        );
+    final firstMealDate = meals
+        .map((m) => m.date)
+        .reduce((a, b) => a.isBefore(b) ? a : b);
     final daysSinceStart = DateTime.now().difference(firstMealDate).inDays;
 
     return {
@@ -350,5 +367,61 @@ class MCPExportService {
     UserModel user,
   ) {
     return MCPExportLocationExtension.analyzeActivityProfile(activities, stats, user);
+  }
+
+  /// Formate les données du capteur Meals
+  Map<String, dynamic>? _formatMealsSensorData(MealsSensorDataModel? data) {
+    if (data == null) return null;
+
+    return {
+      'sensor_id': _generateAnonymousId(data.id),
+      'user_id': _generateAnonymousId(data.userId),
+      'goal_type': data.goal?.toString().split('.').last,
+      'activity_level': data.activityLevel?.toString().split('.').last,
+      'daily_calorie_goal': data.dailyCalorieGoal,
+      'created_at': data.createdAt.toIso8601String(),
+      'updated_at': data.updatedAt.toIso8601String(),
+    };
+  }
+
+  /// Formate les données du capteur Sleep
+  Map<String, dynamic>? _formatSleepSensorData(SleepSensorDataModel? data) {
+    if (data == null) return null;
+
+    return {
+      'sensor_id': _generateAnonymousId(data.id),
+      'user_id': _generateAnonymousId(data.userId),
+      'target_sleep_hours': data.targetSleepHours,
+      'sleep_preferences': data.sleepPreferences,
+      'created_at': data.createdAt.toIso8601String(),
+      'updated_at': data.updatedAt.toIso8601String(),
+    };
+  }
+
+  /// Formate les données du capteur Social
+  Map<String, dynamic>? _formatSocialSensorData(SocialSensorDataModel? data) {
+    if (data == null) return null;
+
+    return {
+      'sensor_id': _generateAnonymousId(data.id),
+      'user_id': _generateAnonymousId(data.userId),
+      'target_interactions_per_day': data.targetInteractionsPerDay,
+      'social_preferences': data.socialPreferences,
+      'created_at': data.createdAt.toIso8601String(),
+      'updated_at': data.updatedAt.toIso8601String(),
+    };
+  }
+
+  /// Formate les données du capteur Location
+  List<Map<String, dynamic>> _formatLocationSensorData(List<LocationSensorDataModel> data) {
+    return data.map((sensor) => {
+      'sensor_id': _generateAnonymousId(sensor.id),
+      'user_id': _generateAnonymousId(sensor.userId),
+      'target_steps_per_day': sensor.targetStepsPerDay,
+      'target_distance_km': sensor.targetDistanceKm,
+      'location_preferences': sensor.locationPreferences,
+      'created_at': sensor.createdAt.toIso8601String(),
+      'updated_at': sensor.updatedAt.toIso8601String(),
+    }).toList();
   }
 }

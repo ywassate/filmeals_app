@@ -30,8 +30,16 @@ class UserRepository {
       if (_currentUser != null) return _currentUser;
 
       // Sinon, récupérer depuis Hive
-      _currentUser = _storageService.userBox.get(_currentUserKey);
-      return _currentUser;
+      final data = _storageService.userBox.get(_currentUserKey);
+
+      // Vérifier le type avant de caster
+      if (data is UserModel) {
+        _currentUser = data;
+        return _currentUser;
+      }
+
+      // Si ce n'est pas un UserModel, retourner null
+      return null;
     } catch (e) {
       throw Exception('Erreur lors de la récupération de l\'utilisateur: $e');
     }
@@ -44,6 +52,17 @@ class UserRepository {
              _storageService.userBox.get(_currentUserKey) != null;
     } catch (e) {
       return false;
+    }
+  }
+
+  /// Récupérer directement les données centrales (pour compatibilité)
+  dynamic getCentralDataDirect() {
+    try {
+      final centralDataBox = _storageService.centralDataBox;
+      if (centralDataBox.isEmpty) return null;
+      return centralDataBox.values.first;
+    } catch (e) {
+      return null;
     }
   }
 

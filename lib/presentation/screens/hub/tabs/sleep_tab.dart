@@ -1,11 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:filmeals_app/core/theme/app_theme.dart';
 import 'package:filmeals_app/core/services/notification_service.dart';
+import 'package:filmeals_app/core/services/local_storage_service.dart';
+import 'package:filmeals_app/core/widgets/minimal_snackbar.dart';
+import 'package:filmeals_app/core/widgets/page_banner.dart';
 import 'package:filmeals_app/presentation/screens/sleep/sleep_input_dialog.dart';
 import 'package:filmeals_app/presentation/screens/sleep/sleep_history_screen.dart';
+import 'package:filmeals_app/presentation/screens/sleep/sleep_weekly_stats_screen.dart';
+import 'package:filmeals_app/data/models/sleep_sensor_data_model.dart';
+import 'package:filmeals_app/data/repository/user_repository.dart';
+import 'package:intl/intl.dart';
 
 class SleepTab extends StatefulWidget {
-  const SleepTab({super.key});
+  final LocalStorageService? storageService;
+
+  const SleepTab({super.key, this.storageService});
 
   @override
   State<SleepTab> createState() => _SleepTabState();
@@ -13,12 +22,46 @@ class SleepTab extends StatefulWidget {
 
 class _SleepTabState extends State<SleepTab> {
   final NotificationService _notificationService = NotificationService();
+  late LocalStorageService _storageService;
+  late UserRepository _userRepository;
+
   bool _notificationsEnabled = false;
+  bool _isLoading = true;
+  String? _userId;
+
+  // Sleep data
+  SleepRecordModel? _lastSleep;
+  List<SleepRecordModel> _last7Days = [];
+  double _averageSleep = 0;
+  int _consistency = 0;
+
+  // Sleep phases (estimated from total duration)
+  Map<String, dynamic> _sleepPhases = {
+    'light': {'duration': 0, 'percentage': 0.0},
+    'deep': {'duration': 0, 'percentage': 0.0},
+    'rem': {'duration': 0, 'percentage': 0.0},
+  };
 
   @override
   void initState() {
     super.initState();
+    _initializeServices();
     _initNotifications();
+    _loadData();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Recharger les données quand on revient sur cette page
+    if (mounted) {
+      _loadData();
+    }
+  }
+
+  void _initializeServices() {
+    _storageService = widget.storageService ?? LocalStorageService();
+    _userRepository = UserRepository(_storageService);
   }
 
   Future<void> _initNotifications() async {
@@ -29,192 +72,467 @@ class _SleepTabState extends State<SleepTab> {
     }
   }
 
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+
+    try {
+      // Get user ID from centralDataBox (same as TestDataService)
+      final centralData = _storageService.centralDataBox.get('currentUser');
+      _userId = centralData?.id ?? 'default_user';
+
+      print('👤 SleepTab using user ID: $_userId');
+
+      // Load sleep records
+      await _loadSleepRecords();
+
+      // Calculate statistics
+      _calculateStatistics();
+
+      // Force rebuild with new data
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      print('Error loading sleep data: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _loadSleepRecords() async {
+    try {
+      final sleepBox = _storageService.sleepRecordsBox;
+      final now = DateTime.now();
+      final yesterday = now.subtract(const Duration(days: 1));
+      final sevenDaysAgo = now.subtract(const Duration(days: 7));
+
+      print('📊 Loading sleep records for user: $_userId');
+      print('📊 Total records in box: ${sleepBox.length}');
+
+      // Get all sleep records for this user
+      final allRecords = sleepBox.values
+          .where((record) {
+            if (record is! SleepRecordModel) return false;
+            final sleepRecord = record as SleepRecordModel;
+            return sleepRecord.userId == _userId;
+          })
+          .cast<SleepRecordModel>()
+          .toList();
+
+      print('📊 User records found: ${allRecords.length}');
+
+      // Sort by bedtime (most recent first)
+      allRecords.sort((a, b) => b.bedTime.compareTo(a.bedTime));
+
+      // Get last night's sleep (most recent within last 48 hours)
+      final recentRecords = allRecords.where((record) {
+        return record.bedTime
+            .isAfter(yesterday.subtract(const Duration(days: 1)));
+      }).toList();
+
+      print('📊 Recent records (last 48h): ${recentRecords.length}');
+
+      if (recentRecords.isNotEmpty) {
+        _lastSleep = recentRecords.first;
+        print(
+            '📊 Last sleep: ${_lastSleep!.bedTime} -> ${_lastSleep!.wakeTime}');
+        _calculateSleepPhases(_lastSleep!);
+      } else {
+        _lastSleep = null;
+        print('📊 No recent sleep found');
+      }
+
+      // Get last 7 days
+      _last7Days = allRecords
+          .where((record) {
+            return record.bedTime.isAfter(sevenDaysAgo);
+          })
+          .take(7)
+          .toList();
+
+      print('📊 Last 7 days records: ${_last7Days.length}');
+    } catch (e) {
+      print('Error loading sleep records: $e');
+    }
+  }
+
+  void _calculateSleepPhases(SleepRecordModel sleep) {
+    // Estimate sleep phases based on total duration
+    // These are typical distributions from sleep research:
+    // Light sleep: 50-60%
+    // Deep sleep: 20-25%
+    // REM sleep: 20-25%
+
+    final totalMinutes = sleep.durationMinutes;
+
+    // Adjust percentages based on total sleep duration
+    double lightPercentage = 0.55;
+    double deepPercentage = 0.23;
+    double remPercentage = 0.22;
+
+    // If sleep is < 6 hours, reduce deep and REM
+    if (sleep.durationHours < 6) {
+      lightPercentage = 0.60;
+      deepPercentage = 0.20;
+      remPercentage = 0.20;
+    }
+    // If sleep > 8 hours, increase REM
+    else if (sleep.durationHours > 8) {
+      lightPercentage = 0.50;
+      deepPercentage = 0.25;
+      remPercentage = 0.25;
+    }
+
+    _sleepPhases = {
+      'light': {
+        'duration': (totalMinutes * lightPercentage).round(),
+        'percentage': lightPercentage,
+      },
+      'deep': {
+        'duration': (totalMinutes * deepPercentage).round(),
+        'percentage': deepPercentage,
+      },
+      'rem': {
+        'duration': (totalMinutes * remPercentage).round(),
+        'percentage': remPercentage,
+      },
+    };
+  }
+
+  void _calculateStatistics() {
+    if (_last7Days.isEmpty) {
+      _averageSleep = 0;
+      _consistency = 0;
+      return;
+    }
+
+    // Calculate average sleep hours
+    final totalMinutes = _last7Days.fold<int>(
+      0,
+      (sum, record) => sum + record.durationMinutes,
+    );
+    _averageSleep = (totalMinutes / _last7Days.length) / 60;
+
+    // Calculate consistency (how close to target)
+    // Target is 8 hours = 480 minutes
+    const targetMinutes = 480;
+    final deviations = _last7Days.map((record) {
+      return (record.durationMinutes - targetMinutes).abs();
+    }).toList();
+
+    final avgDeviation =
+        deviations.fold<int>(0, (sum, dev) => sum + dev) / deviations.length;
+
+    // Convert to percentage (100% = perfect, 0% = >3 hours deviation)
+    // Max deviation considered: 180 minutes (3 hours)
+    _consistency = ((1 - (avgDeviation / 180)) * 100).clamp(0, 100).round();
+  }
+
+  String _formatDuration(int minutes) {
+    final hours = minutes ~/ 60;
+    final mins = minutes % 60;
+    if (hours == 0) {
+      return '${mins}min';
+    }
+    return '${hours}h ${mins}min';
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(
+        backgroundColor: AppTheme.backgroundColor,
+        body: Center(
+          child: CircularProgressIndicator(
+            color: AppTheme.textPrimaryColor,
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
-      body: CustomScrollView(
-        physics: const BouncingScrollPhysics(),
-        slivers: [
-          // App Bar
-          SliverAppBar(
-            expandedHeight: 180,
-            floating: false,
-            pinned: true,
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                decoration: const BoxDecoration(
-                  gradient: AppTheme.sleepGradient,
-                ),
-                child: SafeArea(
+      backgroundColor: AppTheme.backgroundColor,
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Header fixe
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+              child: _buildHeader(),
+            ),
+            const SizedBox(height: 16),
+
+            // Contenu scrollable
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: _loadData,
+                color: AppTheme.textPrimaryColor,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(
+                    parent: BouncingScrollPhysics(),
+                  ),
                   child: Padding(
-                    padding: const EdgeInsets.all(20),
+                    padding: const EdgeInsets.fromLTRB(24, 16, 24, 100),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.end,
                       children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: const Icon(
-                                Icons.bedtime_rounded,
-                                color: Colors.white,
-                                size: 32,
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            const Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Sommeil',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  Text(
-                                    'Analysez votre repos',
-                                    style: TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            IconButton(
-                              onPressed: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => const SleepHistoryScreen(),
-                                  ),
-                                );
-                              },
-                              icon: const Icon(
-                                Icons.history,
-                                color: Colors.white,
-                              ),
-                              tooltip: 'Historique',
-                            ),
-                            IconButton(
-                              onPressed: () {
-                                _showNotificationSettings(context);
-                              },
-                              icon: Icon(
-                                _notificationsEnabled
-                                    ? Icons.notifications_active
-                                    : Icons.notifications_off,
-                                color: Colors.white,
-                              ),
-                              tooltip: 'Notifications',
-                            ),
-                          ],
+                        // Date
+                        Text(
+                          _getFormattedDate(),
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppTheme.textSecondaryColor,
+                            letterSpacing: 0.5,
+                          ),
                         ),
+                        const SizedBox(height: 32),
+
+                        // Bannière
+                        PageBanner(
+                          title: 'Sleep Well',
+                          subtitle: 'Rest is essential for your health',
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Color(0xFF4facfe), Color(0xFF00f2fe)],
+                          ),
+                          imagePath: 'assets/images/carousel/sleep.png',
+                        ),
+                        const SizedBox(height: 32),
+
+                        // Résumé sommeil - Design minimal
+                        _buildSleepSummary(),
+                        const SizedBox(height: 40),
+
+                        // Phases de sommeil
+                        const Text(
+                          'Sleep Phases',
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimaryColor,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        _buildSleepPhases(),
+                        const SizedBox(height: 40),
+
+                        // Stats
+                        const Text(
+                          'Statistics',
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimaryColor,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        _buildStats(),
+                        const SizedBox(height: 40),
+
+                        // Historique
+                        const Text(
+                          'Last 7 days',
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.textPrimaryColor,
+                            letterSpacing: -0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        _buildHistory(),
                       ],
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-
-          // Contenu
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Résumé sommeil
-                  _buildSleepSummary(),
-                  const SizedBox(height: 24),
-
-                  // Phases de sommeil
-                  const Text(
-                    'Phases de sommeil',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildSleepPhases(),
-                  const SizedBox(height: 32),
-
-                  // Stats
-                  const Text(
-                    'Statistiques',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildStats(),
-                  const SizedBox(height: 32),
-
-                  // Historique
-                  const Text(
-                    'Historique (7 derniers jours)',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.textPrimaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildHistory(),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          final result = await showDialog<bool>(
-            context: context,
-            builder: (context) => const SleepInputDialog(),
-          );
-          if (result == true && mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Nuit enregistrée avec succès !'),
-                backgroundColor: Colors.green,
-              ),
-            );
-          }
-        },
-        backgroundColor: AppTheme.sleepColor,
-        icon: const Icon(Icons.add),
-        label: const Text('Ajouter une nuit'),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildSleepSummary() {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        gradient: AppTheme.sleepGradient,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.sleepColor.withOpacity(0.3),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
+  Widget _buildHeader() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        const Text(
+          'Sleep',
+          style: TextStyle(
+            fontSize: 36,
+            fontWeight: FontWeight.w700,
+            color: AppTheme.textPrimaryColor,
+            letterSpacing: -1.5,
           ),
-        ],
+        ),
+        Row(
+          children: [
+            // History button
+            GestureDetector(
+              onTap: () async {
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const SleepHistoryScreen(),
+                  ),
+                );
+                // Recharger les données si des modifications ont été faites
+                if (result == true && mounted) {
+                  await _loadData();
+                }
+              },
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: AppTheme.surfaceColor,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.history,
+                  color: AppTheme.textPrimaryColor,
+                  size: 20,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Weekly Stats button
+            GestureDetector(
+              onTap: () async {
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => SleepWeeklyStatsScreen(
+                      storageService: _storageService,
+                      userId: _userId ?? 'default_user',
+                    ),
+                  ),
+                );
+                // Recharger les données si des modifications ont été faites
+                if (result == true && mounted) {
+                  await _loadData();
+                }
+              },
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: AppTheme.surfaceColor,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.bar_chart,
+                  color: AppTheme.textPrimaryColor,
+                  size: 20,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Add button (FAB replacement)
+            GestureDetector(
+              onTap: () async {
+                if (_userId == null) {
+                  MinimalSnackBar.showError(
+                    context,
+                    title: 'Erreur',
+                    message: 'Impossible de charger l\'utilisateur',
+                  );
+                  return;
+                }
+
+                final result = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => SleepInputDialog(
+                    userId: _userId!,
+                    initialDate: DateTime.now(),
+                  ),
+                );
+                if (result == true && mounted) {
+                  await Future.delayed(const Duration(milliseconds: 100));
+                  await _loadData();
+                  if (mounted) {
+                    MinimalSnackBar.showSuccess(
+                      context,
+                      title: 'Succès',
+                      message: 'Nuit enregistrée avec succès',
+                    );
+                  }
+                }
+              },
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: AppTheme.surfaceColor,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.add,
+                  color: AppTheme.textPrimaryColor,
+                  size: 20,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSleepSummary() {
+    if (_lastSleep == null) {
+      return Container(
+        padding: const EdgeInsets.all(32),
+        decoration: BoxDecoration(
+          color: AppTheme.surfaceColor,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Center(
+          child: Column(
+            children: [
+              Icon(
+                Icons.bedtime_outlined,
+                size: 48,
+                color: AppTheme.textSecondaryColor,
+              ),
+              SizedBox(height: 16),
+              Text(
+                'No sleep recorded yet',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: AppTheme.textSecondaryColor,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Tap + to add your first sleep entry',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppTheme.textSecondaryColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final hours = _lastSleep!.durationMinutes ~/ 60;
+    final minutes = _lastSleep!.durationMinutes % 60;
+    final bedtimeFormatted = DateFormat('HH:mm').format(_lastSleep!.bedTime);
+    final wakeTimeFormatted = DateFormat('HH:mm').format(_lastSleep!.wakeTime);
+
+    return Container(
+      padding: const EdgeInsets.all(32),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         children: [
@@ -223,89 +541,64 @@ class _SleepTabState extends State<SleepTab> {
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              const Text(
-                '7',
-                style: TextStyle(
-                  color: Colors.white,
+              Text(
+                hours.toString(),
+                style: const TextStyle(
+                  color: AppTheme.textPrimaryColor,
                   fontSize: 64,
-                  fontWeight: FontWeight.bold,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -2,
                 ),
               ),
               const Text(
                 'h',
                 style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 32,
-                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textSecondaryColor,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
-              const SizedBox(width: 8),
-              const Text(
-                '30',
-                style: TextStyle(
-                  color: Colors.white,
+              const SizedBox(width: 12),
+              Text(
+                minutes.toString().padLeft(2, '0'),
+                style: const TextStyle(
+                  color: AppTheme.textPrimaryColor,
                   fontSize: 64,
-                  fontWeight: FontWeight.bold,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -2,
                 ),
               ),
               const Text(
                 'min',
                 style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 32,
-                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textSecondaryColor,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          const Text(
-            'Nuit dernière',
+          const SizedBox(height: 12),
+          Text(
+            'Last night',
             style: TextStyle(
-              color: Colors.white70,
-              fontSize: 14,
+              fontSize: 13,
+              color: AppTheme.textSecondaryColor.withOpacity(0.7),
+              letterSpacing: 0.5,
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 32),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildSleepTimeInfo('Coucher', '22:30'),
+              _buildSleepTimeInfo('Bedtime', bedtimeFormatted),
               Container(
                 width: 1,
-                height: 30,
-                color: Colors.white.withOpacity(0.2),
+                height: 40,
+                color: AppTheme.borderColor,
               ),
-              _buildSleepTimeInfo('Réveil', '06:00'),
+              _buildSleepTimeInfo('Wake up', wakeTimeFormatted),
             ],
-          ),
-          const SizedBox(height: 16),
-          // Qualité
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.2),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.star_rounded,
-                  color: Colors.white,
-                  size: 20,
-                ),
-                SizedBox(width: 8),
-                Text(
-                  'Excellente qualité',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
           ),
         ],
       ),
@@ -317,18 +610,20 @@ class _SleepTabState extends State<SleepTab> {
       children: [
         Text(
           label,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 12,
+          style: TextStyle(
+            fontSize: 11,
+            color: AppTheme.textSecondaryColor.withOpacity(0.7),
+            letterSpacing: 0.5,
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 8),
         Text(
           time,
           style: const TextStyle(
-            color: Colors.white,
+            color: AppTheme.textPrimaryColor,
             fontSize: 20,
-            fontWeight: FontWeight.bold,
+            fontWeight: FontWeight.w600,
+            letterSpacing: -0.5,
           ),
         ),
       ],
@@ -336,58 +631,63 @@ class _SleepTabState extends State<SleepTab> {
   }
 
   Widget _buildSleepPhases() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Column(
-        children: [
-          _PhaseItem(
-            label: 'Sommeil léger',
-            duration: '4h 15min',
-            percentage: 57,
-            color: AppTheme.sleepColor.withOpacity(0.5),
+    if (_lastSleep == null) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        child: const Center(
+          child: Text(
+            'Sleep phases will appear once you record sleep',
+            style: TextStyle(
+              fontSize: 14,
+              color: AppTheme.textSecondaryColor,
+            ),
           ),
-          const SizedBox(height: 12),
-          _PhaseItem(
-            label: 'Sommeil profond',
-            duration: '2h 30min',
-            percentage: 33,
-            color: AppTheme.sleepColor,
-          ),
-          const SizedBox(height: 12),
-          _PhaseItem(
-            label: 'Sommeil paradoxal (REM)',
-            duration: '45min',
-            percentage: 10,
-            color: Colors.purple,
-          ),
-        ],
-      ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        _PhaseItem(
+          label: 'Light',
+          duration: _formatDuration(_sleepPhases['light']['duration']),
+          percentage: _sleepPhases['light']['percentage'],
+        ),
+        const SizedBox(height: 20),
+        _PhaseItem(
+          label: 'Deep',
+          duration: _formatDuration(_sleepPhases['deep']['duration']),
+          percentage: _sleepPhases['deep']['percentage'],
+        ),
+        const SizedBox(height: 20),
+        _PhaseItem(
+          label: 'REM',
+          duration: _formatDuration(_sleepPhases['rem']['duration']),
+          percentage: _sleepPhases['rem']['percentage'],
+        ),
+      ],
     );
   }
 
   Widget _buildStats() {
+    final avgHours = _averageSleep.floor();
+    final avgMinutes = ((_averageSleep - avgHours) * 60).round();
+    final avgFormatted =
+        avgHours > 0 ? '${avgHours}h ${avgMinutes}min' : '${avgMinutes}min';
+
     return Row(
       children: [
         Expanded(
-          child: _StatCard(
-            icon: Icons.access_time_rounded,
-            label: 'Moyenne',
-            value: '7h 12min',
-            color: AppTheme.sleepColor,
+          child: _MinimalStatCard(
+            value: _last7Days.isEmpty ? '--' : avgFormatted,
+            label: 'AVERAGE',
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 16),
         Expanded(
-          child: _StatCard(
-            icon: Icons.trending_up_rounded,
-            label: 'Régularité',
-            value: '85%',
-            color: Colors.green,
+          child: _MinimalStatCard(
+            value: _last7Days.isEmpty ? '--' : '$_consistency%',
+            label: 'CONSISTENCY',
           ),
         ),
       ],
@@ -395,32 +695,69 @@ class _SleepTabState extends State<SleepTab> {
   }
 
   Widget _buildHistory() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Column(
-        children: [
-          _HistoryItem(day: 'Aujourd\'hui', hours: 7.5, quality: 'Excellent'),
-          _HistoryItem(day: 'Hier', hours: 6.8, quality: 'Bon'),
-          _HistoryItem(day: 'Il y a 2 jours', hours: 8.2, quality: 'Excellent'),
-          _HistoryItem(day: 'Il y a 3 jours', hours: 7.0, quality: 'Bon'),
-          _HistoryItem(day: 'Il y a 4 jours', hours: 6.5, quality: 'Moyen'),
-          _HistoryItem(day: 'Il y a 5 jours', hours: 7.8, quality: 'Excellent'),
-          _HistoryItem(day: 'Il y a 6 jours', hours: 7.2, quality: 'Bon'),
-        ],
-      ),
-    );
+    if (_last7Days.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(32),
+        child: const Center(
+          child: Text(
+            'No sleep history yet',
+            style: TextStyle(
+              fontSize: 14,
+              color: AppTheme.textSecondaryColor,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final now = DateTime.now();
+    final items = <Widget>[];
+
+    for (int i = 0; i < _last7Days.length; i++) {
+      final record = _last7Days[i];
+      final daysDiff = now.difference(record.bedTime).inDays;
+
+      String dayLabel;
+      if (daysDiff == 0) {
+        dayLabel = 'Today';
+      } else if (daysDiff == 1) {
+        dayLabel = 'Yesterday';
+      } else if (daysDiff < 7) {
+        dayLabel = '$daysDiff days ago';
+      } else {
+        dayLabel = DateFormat('MMM d').format(record.bedTime);
+      }
+
+      if (i > 0) {
+        items.add(const Divider(height: 32, color: AppTheme.borderColor));
+      }
+
+      items.add(_HistoryItem(
+        day: dayLabel,
+        hours: record.durationHours,
+      ));
+    }
+
+    // Fill remaining days if less than 7
+    if (_last7Days.length < 7) {
+      for (int i = _last7Days.length; i < 7; i++) {
+        items.add(const Divider(height: 32, color: AppTheme.borderColor));
+        items.add(_HistoryItem(
+          day: '${i} days ago',
+          hours: 0,
+        ));
+      }
+    }
+
+    return Column(children: items);
   }
 
   void _showNotificationSettings(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) => StatefulBuilder(
         builder: (context, setModalState) => Padding(
@@ -431,107 +768,231 @@ class _SleepTabState extends State<SleepTab> {
             children: [
               Row(
                 children: [
-                  const Icon(
-                    Icons.notifications_active,
-                    color: AppTheme.sleepColor,
-                    size: 28,
-                  ),
-                  const SizedBox(width: 12),
                   const Expanded(
                     child: Text(
                       'Notifications',
                       style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.5,
                       ),
                     ),
                   ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[100],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close, size: 18),
+                    ),
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
-              const Text(
+              const SizedBox(height: 8),
+              Text(
                 'Recevez des rappels quotidiens pour enregistrer votre sommeil',
                 style: TextStyle(
                   fontSize: 14,
-                  color: AppTheme.textSecondaryColor,
+                  color: Colors.grey[600],
                 ),
               ),
               const SizedBox(height: 24),
               SwitchListTile(
-                title: const Text('Activer les notifications'),
-                subtitle: const Text('Rappels à 22h et 7h'),
+                title: const Text(
+                  'Enable notifications',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: Text(
+                  'Rappels à 22h et 7h',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                ),
                 value: _notificationsEnabled,
-                activeColor: AppTheme.sleepColor,
+                activeColor: Colors.black87,
+                contentPadding: EdgeInsets.zero,
                 onChanged: (value) async {
-                  if (value) {
-                    await _notificationService.enableNotifications();
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Notifications activées !'),
-                          backgroundColor: Colors.green,
-                        ),
-                      );
-                    }
-                  } else {
-                    await _notificationService.cancelAllNotifications();
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Notifications désactivées'),
-                          backgroundColor: Colors.orange,
-                        ),
-                      );
-                    }
+                  // Demander confirmation avant d'activer/désactiver
+                  final confirm = await MinimalConfirmDialog.show(
+                    context: context,
+                    title: value
+                        ? 'Activer les notifications'
+                        : 'Désactiver les notifications',
+                    message: value
+                        ? 'Vous recevrez des rappels quotidiens à 22h et 7h'
+                        : 'Les rappels quotidiens seront désactivés',
+                    icon: value
+                        ? Icons.notifications_active
+                        : Icons.notifications_off,
+                    confirmText: value ? 'Activer' : 'Désactiver',
+                    onConfirm: () async {
+                      if (value) {
+                        await _notificationService.enableNotifications();
+                        if (context.mounted) {
+                          MinimalSnackBar.showSuccess(
+                            context,
+                            title: 'Activé',
+                            message: 'Notifications activées avec succès',
+                          );
+                        }
+                      } else {
+                        await _notificationService.cancelAllNotifications();
+                        if (context.mounted) {
+                          MinimalSnackBar.showInfo(
+                            context,
+                            title: 'Désactivé',
+                            message: 'Notifications désactivées',
+                          );
+                        }
+                      }
+                      setState(() {
+                        _notificationsEnabled = value;
+                      });
+                      setModalState(() {
+                        _notificationsEnabled = value;
+                      });
+                    },
+                  );
+
+                  // Si l'utilisateur annule, ne rien faire
+                  if (!confirm) {
+                    return;
                   }
-                  setState(() {
-                    _notificationsEnabled = value;
-                  });
-                  setModalState(() {
-                    _notificationsEnabled = value;
-                  });
                 },
               ),
               const SizedBox(height: 16),
-              ElevatedButton.icon(
-                onPressed: () async {
-                  try {
-                    await _notificationService.testNotification();
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Notification de test envoyée !'),
-                          backgroundColor: Colors.blue,
-                        ),
-                      );
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () async {
+                    // Demander confirmation avant d'envoyer la notification de test
+                    final confirm = await MinimalConfirmDialog.show(
+                      context: context,
+                      title: 'Test de notification',
+                      message: 'Envoyer une notification de test maintenant ?',
+                      icon: Icons.notifications_outlined,
+                      confirmText: 'Envoyer',
+                      onConfirm: () async {
+                        try {
+                          await _notificationService.testNotification();
+                          if (context.mounted) {
+                            MinimalSnackBar.showSuccess(
+                              context,
+                              title: 'Envoyé',
+                              message: 'Notification de test envoyée',
+                            );
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            MinimalSnackBar.showError(
+                              context,
+                              title: 'Erreur',
+                              message:
+                                  'Les notifications ne sont pas disponibles',
+                            );
+                          }
+                        }
+                      },
+                    );
+
+                    if (!confirm) {
+                      return;
                     }
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Erreur: Les notifications ne sont pas disponibles sur cette plateforme'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  }
-                },
-                icon: const Icon(Icons.send),
-                label: const Text('Tester les notifications'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.sleepColor,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size(double.infinity, 48),
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.black87,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    'Test notification',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 16),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  String _getFormattedDate() {
+    final now = DateTime.now();
+    final weekdays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+    final months = [
+      'JAN',
+      'FEB',
+      'MAR',
+      'APR',
+      'MAY',
+      'JUN',
+      'JUL',
+      'AUG',
+      'SEP',
+      'OCT',
+      'NOV',
+      'DEC'
+    ];
+
+    return '${weekdays[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}';
+  }
+}
+
+class _MinimalStatCard extends StatelessWidget {
+  final String value;
+  final String label;
+
+  const _MinimalStatCard({
+    required this.value,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.textPrimaryColor,
+              letterSpacing: -1,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: AppTheme.textSecondaryColor,
+              letterSpacing: 1,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -540,14 +1001,12 @@ class _SleepTabState extends State<SleepTab> {
 class _PhaseItem extends StatelessWidget {
   final String label;
   final String duration;
-  final int percentage;
-  final Color color;
+  final double percentage;
 
   const _PhaseItem({
     required this.label,
     required this.duration,
     required this.percentage,
-    required this.color,
   });
 
   @override
@@ -561,42 +1020,39 @@ class _PhaseItem extends StatelessWidget {
             Text(
               label,
               style: const TextStyle(
-                fontSize: 14,
+                fontSize: 15,
                 fontWeight: FontWeight.w600,
                 color: AppTheme.textPrimaryColor,
               ),
             ),
             Text(
               duration,
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: color,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppTheme.textSecondaryColor,
+                fontWeight: FontWeight.w500,
               ),
             ),
           ],
         ),
-        const SizedBox(height: 8),
-        Row(
+        const SizedBox(height: 12),
+        Stack(
           children: [
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: LinearProgressIndicator(
-                  value: percentage / 100,
-                  minHeight: 8,
-                  backgroundColor: color.withOpacity(0.1),
-                  valueColor: AlwaysStoppedAnimation<Color>(color),
-                ),
+            Container(
+              height: 6,
+              decoration: BoxDecoration(
+                color: AppTheme.borderColor,
+                borderRadius: BorderRadius.circular(3),
               ),
             ),
-            const SizedBox(width: 12),
-            Text(
-              '$percentage%',
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: color,
+            FractionallySizedBox(
+              widthFactor: percentage,
+              child: Container(
+                height: 6,
+                decoration: BoxDecoration(
+                  color: AppTheme.textPrimaryColor,
+                  borderRadius: BorderRadius.circular(3),
+                ),
               ),
             ),
           ],
@@ -606,125 +1062,55 @@ class _PhaseItem extends StatelessWidget {
   }
 }
 
-class _StatCard extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color color;
-
-  const _StatCard({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: color, size: 32),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              color: color,
-            ),
-          ),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 12,
-              color: AppTheme.textSecondaryColor,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _HistoryItem extends StatelessWidget {
   final String day;
   final double hours;
-  final String quality;
 
   const _HistoryItem({
     required this.day,
     required this.hours,
-    required this.quality,
   });
-
-  Color _getQualityColor() {
-    switch (quality) {
-      case 'Excellent':
-        return Colors.green;
-      case 'Bon':
-        return Colors.blue;
-      case 'Moyen':
-        return Colors.orange;
-      default:
-        return Colors.red;
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Expanded(
-            flex: 3,
-            child: Text(
-              day,
-              style: const TextStyle(
-                fontSize: 13,
-                color: AppTheme.textSecondaryColor,
-              ),
+    final displayText = hours > 0 ? '${hours.toStringAsFixed(1)}h' : '--';
+
+    return Row(
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: hours > 0
+                ? AppTheme.textPrimaryColor
+                : AppTheme.textSecondaryColor.withOpacity(0.3),
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Text(
+            day,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: hours > 0
+                  ? AppTheme.textPrimaryColor
+                  : AppTheme.textSecondaryColor,
             ),
           ),
-          Expanded(
-            flex: 2,
-            child: Text(
-              '${hours}h',
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textPrimaryColor,
-              ),
-            ),
+        ),
+        Text(
+          displayText,
+          style: TextStyle(
+            fontSize: 13,
+            color: hours > 0
+                ? AppTheme.textSecondaryColor
+                : AppTheme.textSecondaryColor.withOpacity(0.5),
+            fontWeight: FontWeight.w500,
           ),
-          Expanded(
-            flex: 2,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: _getQualityColor().withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                quality,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: _getQualityColor(),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

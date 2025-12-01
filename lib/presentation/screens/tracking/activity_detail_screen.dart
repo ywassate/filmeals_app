@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:filmeals_app/core/widgets/minimal_snackbar.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:intl/intl.dart';
@@ -24,46 +25,65 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: CustomScrollView(
-        slivers: [
-          // App Bar avec carte
-          SliverAppBar(
-            expandedHeight: 300,
-            pinned: true,
-            flexibleSpace: FlexibleSpaceBar(
-              background: _buildMap(),
-            ),
-          ),
+      backgroundColor: AppTheme.backgroundColor,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Map Section
+              _buildMapSection(),
 
-          // Contenu
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildHeader(),
-                  const SizedBox(height: 24),
-                  _buildStats(),
-                  const SizedBox(height: 24),
-                  _buildActivityInfo(),
-                  const SizedBox(height: 24),
-                  _buildActions(),
-                ],
+              // Content
+              Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildHeader(),
+                    const SizedBox(height: 32),
+                    _buildStats(),
+                    const SizedBox(height: 40),
+
+                    // Details Section
+                    const Text(
+                      'Details',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w600,
+                        color: AppTheme.textPrimaryColor,
+                        letterSpacing: -0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    _buildActivityInfo(),
+                    const SizedBox(height: 40),
+                    _buildActions(),
+                    const SizedBox(height: 40),
+                  ],
+                ),
               ),
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildMap() {
+  Widget _buildMapSection() {
     if (widget.activity.route.isEmpty) {
       return Container(
-        color: Colors.grey[300],
-        child: const Center(
-          child: Text('Aucune carte disponible'),
+        height: 300,
+        color: AppTheme.surfaceColor,
+        child: Center(
+          child: Text(
+            'No map available',
+            style: TextStyle(
+              fontSize: 15,
+              color: AppTheme.textSecondaryColor.withOpacity(0.5),
+            ),
+          ),
         ),
       );
     }
@@ -77,68 +97,91 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
       widget.activity.route.first.longitude,
     );
 
-    return FlutterMap(
-      options: MapOptions(
-        initialCenter: center,
-        initialZoom: 14.0,
+    return SizedBox(
+      height: 300,
+      child: Stack(
+        children: [
+          FlutterMap(
+            options: MapOptions(
+              initialCenter: center,
+              initialZoom: 14.0,
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.filmeals.app',
+              ),
+              PolylineLayer(
+                polylines: [
+                  Polyline(
+                    points: routePoints,
+                    color: AppTheme.textPrimaryColor,
+                    strokeWidth: 4.0,
+                  ),
+                ],
+              ),
+              MarkerLayer(
+                markers: [
+                  Marker(
+                    point: routePoints.first,
+                    width: 32,
+                    height: 32,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.green,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 3),
+                      ),
+                      child: const Icon(
+                        Icons.play_arrow,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                    ),
+                  ),
+                  Marker(
+                    point: routePoints.last,
+                    width: 32,
+                    height: 32,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 3),
+                      ),
+                      child: const Icon(
+                        Icons.stop,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          Positioned(
+            top: 16,
+            left: 16,
+            child: Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: IconButton(
+                icon: const Icon(
+                  Icons.arrow_back,
+                  color: AppTheme.textPrimaryColor,
+                  size: 20,
+                ),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+          ),
+        ],
       ),
-      children: [
-        TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          userAgentPackageName: 'com.filmeals.app',
-        ),
-        // Trajectoire
-        PolylineLayer(
-          polylines: [
-            Polyline(
-              points: routePoints,
-              color: _getActivityColor(widget.activity.activityType),
-              strokeWidth: 4.0,
-            ),
-          ],
-        ),
-        // Marqueurs début et fin
-        MarkerLayer(
-          markers: [
-            // Début (vert)
-            Marker(
-              point: routePoints.first,
-              width: 40,
-              height: 40,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.green,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 3),
-                ),
-                child: const Icon(
-                  Icons.play_arrow,
-                  color: Colors.white,
-                  size: 20,
-                ),
-              ),
-            ),
-            // Fin (rouge)
-            Marker(
-              point: routePoints.last,
-              width: 40,
-              height: 40,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.red,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 3),
-                ),
-                child: const Icon(
-                  Icons.stop,
-                  color: Colors.white,
-                  size: 20,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
     );
   }
 
@@ -148,13 +191,13 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: _getActivityColor(widget.activity.activityType).withOpacity(0.1),
+            color: AppTheme.surfaceColor,
             borderRadius: BorderRadius.circular(16),
           ),
           child: Icon(
             _getActivityIcon(widget.activity.activityType),
-            color: _getActivityColor(widget.activity.activityType),
-            size: 32,
+            color: AppTheme.textPrimaryColor,
+            size: 28,
           ),
         ),
         const SizedBox(width: 16),
@@ -165,17 +208,20 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
               Text(
                 _getActivityText(widget.activity.activityType),
                 style: const TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w700,
                   color: AppTheme.textPrimaryColor,
+                  letterSpacing: -1,
                 ),
               ),
+              const SizedBox(height: 4),
               Text(
                 DateFormat('dd MMM yyyy • HH:mm', 'fr_FR')
                     .format(widget.activity.startTime),
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: AppTheme.textSecondaryColor,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppTheme.textSecondaryColor.withOpacity(0.7),
+                  letterSpacing: 0.5,
                 ),
               ),
             ],
@@ -186,77 +232,30 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
   }
 
   Widget _buildStats() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            _getActivityColor(widget.activity.activityType),
-            _getActivityColor(widget.activity.activityType).withOpacity(0.7),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: _getActivityColor(widget.activity.activityType).withOpacity(0.3),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _buildStatItem(
-            Icons.straighten_rounded,
-            '${widget.activity.distanceKm.toStringAsFixed(2)}',
-            'km',
-          ),
-          Container(width: 1, height: 50, color: Colors.white.withOpacity(0.3)),
-          _buildStatItem(
-            Icons.timer_rounded,
-            '${widget.activity.durationMinutes}',
-            'min',
-          ),
-          Container(width: 1, height: 50, color: Colors.white.withOpacity(0.3)),
-          _buildStatItem(
-            Icons.speed_rounded,
-            _getAverageSpeed().toStringAsFixed(1),
-            'km/h',
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatItem(IconData icon, String value, String unit) {
-    return Column(
+    return Row(
       children: [
-        Icon(icon, color: Colors.white, size: 28),
-        const SizedBox(height: 8),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Text(
-              value,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(width: 4),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 3),
-              child: Text(
-                unit,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 14,
-                ),
-              ),
-            ),
-          ],
+        Expanded(
+          child: _StatCard(
+            icon: Icons.straighten_rounded,
+            value: widget.activity.distanceKm.toStringAsFixed(2),
+            unit: 'km',
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: _StatCard(
+            icon: Icons.timer_rounded,
+            value: '${widget.activity.durationMinutes}',
+            unit: 'min',
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: _StatCard(
+            icon: Icons.speed_rounded,
+            value: _getAverageSpeed().toStringAsFixed(1),
+            unit: 'km/h',
+          ),
         ),
       ],
     );
@@ -264,39 +263,29 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
 
   Widget _buildActivityInfo() {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Détails',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            color: AppTheme.textPrimaryColor,
-          ),
-        ),
-        const SizedBox(height: 16),
-        _buildInfoCard(
+        _buildInfoItem(
           Icons.directions_walk_rounded,
-          'Pas',
+          'Steps',
           widget.activity.stepsCount > 0
-              ? '${widget.activity.stepsCount} pas'
-              : 'Non disponible',
+              ? '${widget.activity.stepsCount} steps'
+              : 'Not available',
         ),
-        const SizedBox(height: 12),
-        _buildInfoCard(
+        const Divider(height: 32, color: AppTheme.borderColor),
+        _buildInfoItem(
           Icons.access_time_rounded,
-          'Heure de début',
+          'Start time',
           DateFormat('HH:mm', 'fr_FR').format(widget.activity.startTime),
         ),
-        const SizedBox(height: 12),
-        _buildInfoCard(
+        const Divider(height: 32, color: AppTheme.borderColor),
+        _buildInfoItem(
           Icons.flag_rounded,
-          'Heure de fin',
+          'End time',
           DateFormat('HH:mm', 'fr_FR').format(widget.activity.endTime),
         ),
         if (widget.activity.notes.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          _buildInfoCard(
+          const Divider(height: 32, color: AppTheme.borderColor),
+          _buildInfoItem(
             Icons.note_rounded,
             'Notes',
             widget.activity.notes,
@@ -306,50 +295,43 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
     );
   }
 
-  Widget _buildInfoCard(IconData icon, String label, String value) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.borderColor),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: AppTheme.locationColor.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, color: AppTheme.locationColor, size: 24),
+  Widget _buildInfoItem(IconData icon, String label, String value) {
+    return Row(
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: const BoxDecoration(
+            color: AppTheme.textPrimaryColor,
+            shape: BoxShape.circle,
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppTheme.textSecondaryColor,
-                  ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: AppTheme.textSecondaryColor.withOpacity(0.7),
+                  letterSpacing: 0.5,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: AppTheme.textPrimaryColor,
-                  ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppTheme.textPrimaryColor,
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -359,11 +341,11 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
         Expanded(
           child: OutlinedButton.icon(
             onPressed: _changeActivityType,
-            icon: const Icon(Icons.edit_rounded),
-            label: const Text('Modifier le type'),
+            icon: const Icon(Icons.edit_rounded, size: 18),
+            label: const Text('Change type'),
             style: OutlinedButton.styleFrom(
-              foregroundColor: AppTheme.locationColor,
-              side: const BorderSide(color: AppTheme.locationColor),
+              foregroundColor: AppTheme.textPrimaryColor,
+              side: const BorderSide(color: AppTheme.borderColor),
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -375,15 +357,16 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
         Expanded(
           child: ElevatedButton.icon(
             onPressed: _deleteActivity,
-            icon: const Icon(Icons.delete_rounded),
-            label: const Text('Supprimer'),
+            icon: const Icon(Icons.delete_rounded, size: 18),
+            label: const Text('Delete'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
+              backgroundColor: AppTheme.textPrimaryColor,
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
               ),
+              elevation: 0,
             ),
           ),
         ),
@@ -394,36 +377,63 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
   void _changeActivityType() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => Padding(
+        padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Modifier le type d\'activité',
+              'Change activity type',
               style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
+                fontSize: 24,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.5,
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 24),
             ...ActivityType.values.map((type) {
-              return ListTile(
-                leading: Icon(
-                  _getActivityIcon(type),
-                  color: _getActivityColor(type),
+              final isSelected = widget.activity.activityType == type;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: isSelected ? Colors.black87 : Colors.grey[100],
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      _getActivityIcon(type),
+                      color: isSelected ? Colors.white : Colors.black87,
+                      size: 20,
+                    ),
+                  ),
+                  title: Text(
+                    _getActivityText(type),
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  trailing: isSelected
+                      ? const Icon(Icons.check_circle, color: Colors.black87)
+                      : null,
+                  onTap: () {
+                    _updateActivityType(type);
+                    Navigator.pop(context);
+                  },
                 ),
-                title: Text(_getActivityText(type)),
-                trailing: widget.activity.activityType == type
-                    ? const Icon(Icons.check, color: Colors.green)
-                    : null,
-                onTap: () {
-                  _updateActivityType(type);
-                  Navigator.pop(context);
-                },
               );
             }),
+            const SizedBox(height: 16),
           ],
         ),
       ),
@@ -432,13 +442,11 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
 
   Future<void> _updateActivityType(ActivityType newType) async {
     await _repository.updateActivityType(widget.activity.id, newType);
-    setState(() {
-      // L'activité sera mise à jour automatiquement
-    });
+    setState(() {});
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Type modifié en ${_getActivityText(newType)}'),
+          content: Text('Type changed to ${_getActivityText(newType)}'),
           backgroundColor: Colors.green,
         ),
       );
@@ -449,20 +457,52 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Supprimer l\'activité'),
-        content: const Text('Êtes-vous sûr de vouloir supprimer cette activité ?'),
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+        ),
+        contentPadding: const EdgeInsets.all(24),
+        title: const Text(
+          'Delete activity',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.5,
+          ),
+        ),
+        content: const Text(
+          'Are you sure you want to delete this activity?',
+          style: TextStyle(fontSize: 15),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Annuler'),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            ),
+            child: Text(
+              'Cancel',
+              style: TextStyle(
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
+              backgroundColor: Colors.black87,
               foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              elevation: 0,
             ),
-            child: const Text('Supprimer'),
+            child: const Text(
+              'Delete',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),
@@ -472,12 +512,11 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
       await _repository.deleteLocationRecord(widget.activity.id);
       if (mounted) {
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Activité supprimée'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        MinimalSnackBar.showWarning(
+        context,
+        title: 'Attention',
+        message: 'Activity deleted',
+      );
       }
     }
   }
@@ -485,23 +524,6 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
   double _getAverageSpeed() {
     if (widget.activity.durationMinutes == 0) return 0.0;
     return (widget.activity.distanceKm / widget.activity.durationMinutes) * 60;
-  }
-
-  Color _getActivityColor(ActivityType type) {
-    switch (type) {
-      case ActivityType.walking:
-        return Colors.green;
-      case ActivityType.running:
-        return Colors.red;
-      case ActivityType.cycling:
-        return Colors.blue;
-      case ActivityType.driving:
-        return Colors.orange;
-      case ActivityType.stationary:
-        return Colors.grey;
-      case ActivityType.other:
-        return AppTheme.locationColor;
-    }
   }
 
   IconData _getActivityIcon(ActivityType type) {
@@ -524,17 +546,71 @@ class _ActivityDetailScreenState extends State<ActivityDetailScreen> {
   String _getActivityText(ActivityType type) {
     switch (type) {
       case ActivityType.walking:
-        return 'Marche';
+        return 'Walking';
       case ActivityType.running:
-        return 'Course';
+        return 'Running';
       case ActivityType.cycling:
-        return 'Vélo';
+        return 'Cycling';
       case ActivityType.driving:
-        return 'Transport';
+        return 'Driving';
       case ActivityType.stationary:
-        return 'Immobile';
+        return 'Stationary';
       case ActivityType.other:
-        return 'Autre';
+        return 'Other';
     }
+  }
+}
+
+class _StatCard extends StatelessWidget {
+  final IconData icon;
+  final String value;
+  final String unit;
+
+  const _StatCard({
+    required this.icon,
+    required this.value,
+    required this.unit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: AppTheme.textPrimaryColor, size: 24),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                value,
+                style: const TextStyle(
+                  color: AppTheme.textPrimaryColor,
+                  fontSize: 24,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -1,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                unit,
+                style: const TextStyle(
+                  color: AppTheme.textSecondaryColor,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }

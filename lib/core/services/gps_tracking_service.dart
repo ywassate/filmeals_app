@@ -48,6 +48,21 @@ class GpsTrackingService {
     return true;
   }
 
+  /// Récupère la position actuelle sans démarrer le tracking
+  Future<Position?> getCurrentPosition() async {
+    try {
+      final hasPermission = await checkAndRequestPermissions();
+      if (!hasPermission) return null;
+
+      return await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+    } catch (e) {
+      print('Erreur getCurrentPosition: $e');
+      return null;
+    }
+  }
+
   /// Démarre le tracking GPS
   Future<bool> startTracking() async {
     if (_isTracking) return true;
@@ -139,11 +154,8 @@ class GpsTrackingService {
     final endTime = DateTime.now();
     final distance = getTotalDistance();
 
-    // Ne pas enregistrer les activités trop courtes
-    if (distance < 0.1) {
-      _resetTracking();
-      return null;
-    }
+    // Enregistrer TOUTES les activités sans limite
+    // Même les courtes distances sont importantes pour l'utilisateur
 
     final record = models.LocationRecordModel(
       id: DateTime.now().millisecondsSinceEpoch.toString(),

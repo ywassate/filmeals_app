@@ -1,11 +1,22 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:filmeals_app/data/models/sleep_sensor_data_model.dart';
 import 'package:filmeals_app/core/services/local_storage_service.dart';
+import 'package:filmeals_app/core/widgets/minimal_snackbar.dart';
+import 'package:filmeals_app/core/theme/app_theme.dart';
 
-/// Dialog pour enregistrer une nouvelle nuit de sommeil
-/// Permet de saisir l'heure de coucher, l'heure de réveil et la qualité
+/// Dialog pour enregistrer une nouvelle nuit de sommeil avec UX améliorée
 class SleepInputDialog extends StatefulWidget {
-  const SleepInputDialog({super.key});
+  final String userId;
+  final DateTime? initialDate;
+  final SleepRecordModel? existingRecord; // Pour l'édition
+
+  const SleepInputDialog({
+    super.key,
+    required this.userId,
+    this.initialDate,
+    this.existingRecord,
+  });
 
   @override
   State<SleepInputDialog> createState() => _SleepInputDialogState();
@@ -14,10 +25,27 @@ class SleepInputDialog extends StatefulWidget {
 class _SleepInputDialogState extends State<SleepInputDialog> {
   DateTime? _bedTime;
   DateTime? _wakeTime;
+  DateTime _selectedDate = DateTime.now();
   SleepQuality _quality = SleepQuality.good;
   int _interruptionsCount = 0;
   final TextEditingController _notesController = TextEditingController();
   final LocalStorageService _storageService = LocalStorageService();
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDate = widget.initialDate ?? DateTime.now();
+
+    // Si c'est une édition, pré-remplir les champs
+    if (widget.existingRecord != null) {
+      _bedTime = widget.existingRecord!.bedTime;
+      _wakeTime = widget.existingRecord!.wakeTime;
+      _quality = widget.existingRecord!.quality;
+      _interruptionsCount = widget.existingRecord!.interruptionsCount;
+      _notesController.text = widget.existingRecord!.notes;
+      _selectedDate = widget.existingRecord!.bedTime;
+    }
+  }
 
   @override
   void dispose() {
@@ -26,36 +54,35 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
   }
 
   Future<void> _selectBedTime() async {
-    final time = await showTimePicker(
+    HapticFeedback.selectionClick();
+    final time = await _showModernTimePicker(
       context: context,
-      initialTime: const TimeOfDay(hour: 22, minute: 0),
-      helpText: 'À quelle heure vous êtes-vous couché(e) ?',
+      initialHour: 22,
+      initialMinute: 0,
+      title: 'Heure de coucher',
     );
 
     if (time != null) {
       setState(() {
         final now = DateTime.now();
-        // Si on a déjà une heure de réveil, on ajuste la date de coucher en conséquence
         if (_wakeTime != null) {
           _bedTime = DateTime(
             _wakeTime!.year,
             _wakeTime!.month,
             _wakeTime!.day,
-            time.hour,
-            time.minute,
+            time['hour']!,
+            time['minute']!,
           );
-          // Si l'heure de coucher est après l'heure de réveil, c'est la veille
           if (_bedTime!.isAfter(_wakeTime!)) {
             _bedTime = _bedTime!.subtract(const Duration(days: 1));
           }
         } else {
-          // Sinon, on suppose que c'est hier soir
           _bedTime = DateTime(
             now.year,
             now.month,
             now.day - 1,
-            time.hour,
-            time.minute,
+            time['hour']!,
+            time['minute']!,
           );
         }
       });
@@ -63,10 +90,12 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
   }
 
   Future<void> _selectWakeTime() async {
-    final time = await showTimePicker(
+    HapticFeedback.selectionClick();
+    final time = await _showModernTimePicker(
       context: context,
-      initialTime: const TimeOfDay(hour: 7, minute: 0),
-      helpText: 'À quelle heure vous êtes-vous réveillé(e) ?',
+      initialHour: 7,
+      initialMinute: 0,
+      title: 'Heure de réveil',
     );
 
     if (time != null) {
@@ -76,11 +105,10 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
           now.year,
           now.month,
           now.day,
-          time.hour,
-          time.minute,
+          time['hour']!,
+          time['minute']!,
         );
 
-        // Si on a déjà une heure de coucher, on réajuste les dates
         if (_bedTime != null) {
           _bedTime = DateTime(
             _wakeTime!.year,
@@ -89,7 +117,6 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
             _bedTime!.hour,
             _bedTime!.minute,
           );
-          // Si l'heure de coucher est après l'heure de réveil, c'est la veille
           if (_bedTime!.isAfter(_wakeTime!)) {
             _bedTime = _bedTime!.subtract(const Duration(days: 1));
           }
@@ -98,23 +125,41 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
     }
   }
 
+  Future<Map<String, int>?> _showModernTimePicker({
+    required BuildContext context,
+    required int initialHour,
+    required int initialMinute,
+    required String title,
+  }) async {
+    return showModalBottomSheet<Map<String, int>>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => _ModernTimePicker(
+        initialHour: initialHour,
+        initialMinute: initialMinute,
+        title: title,
+      ),
+    );
+  }
+
   Future<void> _save() async {
     if (_bedTime == null || _wakeTime == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Veuillez saisir les heures de coucher et de réveil'),
-          backgroundColor: Colors.red,
-        ),
+      MinimalSnackBar.showWarning(
+        context,
+        title: 'Attention',
+        message: 'Veuillez saisir les heures de coucher et de réveil',
       );
       return;
     }
 
     if (_wakeTime!.isBefore(_bedTime!)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('L\'heure de réveil doit être après l\'heure de coucher'),
-          backgroundColor: Colors.red,
-        ),
+      MinimalSnackBar.showError(
+        context,
+        title: 'Erreur',
+        message: 'L\'heure de réveil doit être après l\'heure de coucher',
       );
       return;
     }
@@ -122,40 +167,32 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
     final durationMinutes = _wakeTime!.difference(_bedTime!).inMinutes;
 
     final record = SleepRecordModel(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      userId: 'current_user',
+      id: widget.existingRecord?.id ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      userId: widget.userId,
       bedTime: _bedTime!,
       wakeTime: _wakeTime!,
       durationMinutes: durationMinutes,
       quality: _quality,
       interruptionsCount: _interruptionsCount,
       notes: _notesController.text,
-      createdAt: DateTime.now(),
+      createdAt: widget.existingRecord?.createdAt ?? DateTime.now(),
       updatedAt: DateTime.now(),
     );
 
     try {
-      // Sauvegarder dans Hive
       await _storageService.sleepRecordsBox.put(record.id, record);
-      print('✅ Nuit sauvegardée: ${record.toJson()}');
+      print('✅ Nuit ${widget.existingRecord != null ? "modifiée" : "sauvegardée"}: ${record.toJson()}');
 
       if (mounted) {
         Navigator.of(context).pop(true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Nuit enregistrée avec succès !'),
-            backgroundColor: Colors.green,
-          ),
-        );
       }
     } catch (e) {
       print('❌ Erreur lors de la sauvegarde: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Erreur lors de la sauvegarde: $e'),
-            backgroundColor: Colors.red,
-          ),
+        MinimalSnackBar.showError(
+          context,
+          title: 'Erreur',
+          message: 'Impossible d\'enregistrer la nuit',
         );
       }
     }
@@ -168,8 +205,9 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
         : null;
 
     return Dialog(
+      backgroundColor: Colors.white,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(24),
       ),
       child: SingleChildScrollView(
         child: Padding(
@@ -178,85 +216,179 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Titre
+              // Titre avec icône
               Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Colors.indigo.withOpacity(0.1),
+                      color: AppTheme.surfaceColor,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(
-                      Icons.bedtime,
-                      color: Colors.indigo,
-                      size: 32,
+                    child: const Text(
+                      '🌙',
+                      style: TextStyle(fontSize: 24),
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Enregistrer une nuit',
-                      style: TextStyle(
+                      widget.existingRecord != null
+                          ? 'Modifier une nuit'
+                          : 'Enregistrer une nuit',
+                      style: const TextStyle(
                         fontSize: 22,
-                        fontWeight: FontWeight.bold,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.5,
                       ),
                     ),
                   ),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close),
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[100],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      onPressed: () {
+                        HapticFeedback.selectionClick();
+                        Navigator.of(context).pop();
+                      },
+                      icon: const Icon(Icons.close, size: 18),
+                    ),
                   ),
                 ],
               ),
 
               const SizedBox(height: 24),
 
+              // Sélection de date
+              InkWell(
+                onTap: () async {
+                  HapticFeedback.selectionClick();
+                  final selectedDate = await showDatePicker(
+                    context: context,
+                    initialDate: _selectedDate,
+                    firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                    lastDate: DateTime.now(),
+                    builder: (context, child) {
+                      return Theme(
+                        data: Theme.of(context).copyWith(
+                          colorScheme: const ColorScheme.light(
+                            primary: AppTheme.textPrimaryColor,
+                            onPrimary: Colors.white,
+                            surface: Colors.white,
+                          ),
+                        ),
+                        child: child!,
+                      );
+                    },
+                  );
+                  if (selectedDate != null) {
+                    setState(() => _selectedDate = selectedDate);
+                  }
+                },
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
+                  decoration: BoxDecoration(
+                    color: AppTheme.surfaceColor,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.black12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Text(
+                        '📅',
+                        style: TextStyle(fontSize: 24),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Date',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey[600],
+                                fontWeight: FontWeight.w500,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _formatDate(_selectedDate),
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        Icons.chevron_right,
+                        size: 24,
+                        color: Colors.grey[400],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 12),
+
               // Heure de coucher
-              _buildTimeSelector(
-                label: 'Heure de coucher',
-                icon: Icons.nightlight_round,
+              _buildModernTimeSelector(
+                emoji: '😴',
+                label: 'Coucher',
                 time: _bedTime,
                 onTap: _selectBedTime,
               ),
 
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
 
               // Heure de réveil
-              _buildTimeSelector(
-                label: 'Heure de réveil',
-                icon: Icons.wb_sunny,
+              _buildModernTimeSelector(
+                emoji: '☀️',
+                label: 'Réveil',
                 time: _wakeTime,
                 onTap: _selectWakeTime,
               ),
 
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
 
               // Durée calculée
               if (durationText != null)
                 Container(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
                   decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: Colors.blue.withOpacity(0.3),
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.indigo.shade50,
+                        Colors.blue.shade50,
+                      ],
                     ),
+                    borderRadius: BorderRadius.circular(16),
                   ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(
-                        Icons.access_time,
-                        color: Colors.blue,
+                      const Text(
+                        '⏱️',
+                        style: TextStyle(fontSize: 20),
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        'Durée: $durationText',
+                        durationText,
                         style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.blue,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.black87,
                         ),
                       ),
                     ],
@@ -265,90 +397,80 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
 
               const SizedBox(height: 24),
 
-              // Qualité du sommeil
+              // Qualité du sommeil avec emojis
               const Text(
                 'Qualité du sommeil',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: 15,
                   fontWeight: FontWeight.w600,
+                  color: Colors.black87,
                 ),
               ),
               const SizedBox(height: 12),
-              _buildQualitySelector(),
+              _buildEmojiQualitySelector(),
 
               const SizedBox(height: 24),
 
               // Nombre d'interruptions
               const Text(
-                'Nombre de réveils nocturnes',
+                'Réveils nocturnes',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: 15,
                   fontWeight: FontWeight.w600,
+                  color: Colors.black87,
                 ),
               ),
               const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(
-                    onPressed: _interruptionsCount > 0
-                        ? () => setState(() => _interruptionsCount--)
-                        : null,
-                    icon: const Icon(Icons.remove_circle_outline),
-                    iconSize: 32,
-                  ),
-                  const SizedBox(width: 16),
-                  Text(
-                    '$_interruptionsCount',
-                    style: const TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  IconButton(
-                    onPressed: () => setState(() => _interruptionsCount++),
-                    icon: const Icon(Icons.add_circle_outline),
-                    iconSize: 32,
-                  ),
-                ],
-              ),
+              _buildInterruptionsCounter(),
 
               const SizedBox(height: 24),
 
               // Notes (optionnel)
               TextField(
                 controller: _notesController,
-                maxLines: 3,
+                maxLines: 2,
                 decoration: InputDecoration(
                   labelText: 'Notes (optionnel)',
-                  hintText: 'Ajoutez des observations sur votre sommeil...',
+                  hintText: 'Comment s\'est passée votre nuit ?',
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
                   ),
-                  prefixIcon: const Icon(Icons.note),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: const BorderSide(color: Colors.black87, width: 2),
+                  ),
+                  prefixIcon: const Icon(Icons.edit_note),
+                  filled: true,
+                  fillColor: Colors.grey.shade50,
                 ),
               ),
 
               const SizedBox(height: 24),
 
               // Bouton enregistrer
-              ElevatedButton.icon(
+              ElevatedButton(
                 onPressed: _save,
-                icon: const Icon(Icons.check_circle),
-                label: const Text(
-                  'Enregistrer',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.indigo,
+                  backgroundColor: Colors.black87,
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  padding: const EdgeInsets.symmetric(vertical: 18),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  elevation: 0,
+                ),
+                child: Text(
+                  widget.existingRecord != null
+                      ? 'Modifier la nuit'
+                      : 'Enregistrer la nuit',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
@@ -359,86 +481,189 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
     );
   }
 
-  Widget _buildTimeSelector({
+  Widget _buildModernTimeSelector({
+    required String emoji,
     required String label,
-    required IconData icon,
     required DateTime? time,
     required VoidCallback onTap,
   }) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(16),
       child: Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
         decoration: BoxDecoration(
-          border: Border.all(color: Colors.grey[300]!),
-          borderRadius: BorderRadius.circular(12),
+          color: time != null ? AppTheme.surfaceColor : Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: time != null ? Colors.black12 : Colors.grey.shade200,
+            width: 1,
+          ),
         ),
         child: Row(
           children: [
-            Icon(icon, color: Colors.indigo, size: 28),
-            const SizedBox(width: 12),
+            Text(
+              emoji,
+              style: const TextStyle(fontSize: 32),
+            ),
+            const SizedBox(width: 16),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     label,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey[600],
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.5,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     time != null
                         ? '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}'
-                        : 'Sélectionner',
+                        : '--:--',
                     style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      color: time != null ? Colors.black : Colors.grey,
+                      fontSize: 28,
+                      fontWeight: FontWeight.w700,
+                      color: time != null ? Colors.black87 : Colors.grey[400],
+                      letterSpacing: -1,
                     ),
                   ),
                 ],
               ),
             ),
-            const Icon(Icons.arrow_forward_ios, size: 16),
+            Icon(
+              Icons.chevron_right,
+              size: 24,
+              color: Colors.grey[400],
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildQualitySelector() {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
+  Widget _buildEmojiQualitySelector() {
+    const qualityEmojis = {
+      SleepQuality.poor: '😣',
+      SleepQuality.fair: '😐',
+      SleepQuality.good: '🙂',
+      SleepQuality.excellent: '😄',
+    };
+
+    const qualityLabels = {
+      SleepQuality.poor: 'Mauvais',
+      SleepQuality.fair: 'Moyen',
+      SleepQuality.good: 'Bon',
+      SleepQuality.excellent: 'Excellent',
+    };
+
+    return Row(
       children: SleepQuality.values.map((quality) {
         final isSelected = _quality == quality;
-        final color = _getQualityColor(quality);
-        final label = _getQualityLabel(quality);
-
-        return ChoiceChip(
-          label: Text(label),
-          selected: isSelected,
-          onSelected: (selected) {
-            setState(() {
-              _quality = quality;
-            });
-          },
-          selectedColor: color.withOpacity(0.3),
-          backgroundColor: Colors.grey[200],
-          labelStyle: TextStyle(
-            color: isSelected ? color : Colors.black,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-          ),
-          side: BorderSide(
-            color: isSelected ? color : Colors.grey[300]!,
-            width: isSelected ? 2 : 1,
+        return Expanded(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: InkWell(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() => _quality = quality);
+              },
+              borderRadius: BorderRadius.circular(16),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                decoration: BoxDecoration(
+                  color: isSelected ? Colors.black87 : Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: isSelected ? Colors.black87 : Colors.grey.shade300,
+                    width: isSelected ? 2 : 1,
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      qualityEmojis[quality]!,
+                      style: TextStyle(
+                        fontSize: isSelected ? 32 : 28,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      qualityLabels[quality]!,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: isSelected ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         );
       }).toList(),
+    );
+  }
+
+  Widget _buildInterruptionsCounter() {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 20),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          IconButton(
+            onPressed: _interruptionsCount > 0
+                ? () {
+                    HapticFeedback.selectionClick();
+                    setState(() => _interruptionsCount--);
+                  }
+                : null,
+            icon: Icon(
+              Icons.remove_circle,
+              color: _interruptionsCount > 0 ? Colors.black87 : Colors.grey[300],
+              size: 36,
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '$_interruptionsCount',
+              style: const TextStyle(
+                fontSize: 32,
+                fontWeight: FontWeight.w700,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: () {
+              HapticFeedback.selectionClick();
+              setState(() => _interruptionsCount++);
+            },
+            icon: const Icon(
+              Icons.add_circle,
+              color: Colors.black87,
+              size: 36,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -449,29 +674,221 @@ class _SleepInputDialogState extends State<SleepInputDialog> {
     return '${hours}h ${minutes}min';
   }
 
-  String _getQualityLabel(SleepQuality quality) {
-    switch (quality) {
-      case SleepQuality.poor:
-        return 'Mauvais';
-      case SleepQuality.fair:
-        return 'Passable';
-      case SleepQuality.good:
-        return 'Bon';
-      case SleepQuality.excellent:
-        return 'Excellent';
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final yesterday = now.subtract(const Duration(days: 1));
+
+    if (date.year == now.year && date.month == now.month && date.day == now.day) {
+      return 'Aujourd\'hui';
+    } else if (date.year == yesterday.year && date.month == yesterday.month && date.day == yesterday.day) {
+      return 'Hier';
+    } else {
+      final months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'];
+      return '${date.day} ${months[date.month - 1]} ${date.year}';
     }
   }
+}
 
-  Color _getQualityColor(SleepQuality quality) {
-    switch (quality) {
-      case SleepQuality.poor:
-        return Colors.red;
-      case SleepQuality.fair:
-        return Colors.orange;
-      case SleepQuality.good:
-        return Colors.blue;
-      case SleepQuality.excellent:
-        return Colors.green;
-    }
+/// Modern time picker avec roues de défilement
+class _ModernTimePicker extends StatefulWidget {
+  final int initialHour;
+  final int initialMinute;
+  final String title;
+
+  const _ModernTimePicker({
+    required this.initialHour,
+    required this.initialMinute,
+    required this.title,
+  });
+
+  @override
+  State<_ModernTimePicker> createState() => _ModernTimePickerState();
+}
+
+class _ModernTimePickerState extends State<_ModernTimePicker> {
+  late FixedExtentScrollController _hourController;
+  late FixedExtentScrollController _minuteController;
+  late int _selectedHour;
+  late int _selectedMinute;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedHour = widget.initialHour;
+    _selectedMinute = widget.initialMinute;
+    _hourController = FixedExtentScrollController(initialItem: _selectedHour);
+    _minuteController = FixedExtentScrollController(initialItem: _selectedMinute);
+  }
+
+  @override
+  void dispose() {
+    _hourController.dispose();
+    _minuteController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Titre
+          Text(
+            widget.title,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // Sélecteurs
+          Container(
+            height: 200,
+            decoration: BoxDecoration(
+              color: Colors.grey.shade50,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Row(
+              children: [
+                // Heures
+                Expanded(
+                  child: ListWheelScrollView.useDelegate(
+                    controller: _hourController,
+                    itemExtent: 50,
+                    perspective: 0.005,
+                    diameterRatio: 1.2,
+                    physics: const FixedExtentScrollPhysics(),
+                    onSelectedItemChanged: (index) {
+                      HapticFeedback.selectionClick();
+                      setState(() => _selectedHour = index);
+                    },
+                    childDelegate: ListWheelChildBuilderDelegate(
+                      builder: (context, index) {
+                        if (index < 0 || index > 23) return null;
+                        final isSelected = index == _selectedHour;
+                        return Center(
+                          child: Text(
+                            index.toString().padLeft(2, '0'),
+                            style: TextStyle(
+                              fontSize: isSelected ? 32 : 24,
+                              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                              color: isSelected ? Colors.black87 : Colors.grey,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                // Séparateur
+                const Text(
+                  ':',
+                  style: TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                // Minutes
+                Expanded(
+                  child: ListWheelScrollView.useDelegate(
+                    controller: _minuteController,
+                    itemExtent: 50,
+                    perspective: 0.005,
+                    diameterRatio: 1.2,
+                    physics: const FixedExtentScrollPhysics(),
+                    onSelectedItemChanged: (index) {
+                      HapticFeedback.selectionClick();
+                      setState(() => _selectedMinute = index);
+                    },
+                    childDelegate: ListWheelChildBuilderDelegate(
+                      builder: (context, index) {
+                        if (index < 0 || index > 59) return null;
+                        final isSelected = index == _selectedMinute;
+                        return Center(
+                          child: Text(
+                            index.toString().padLeft(2, '0'),
+                            style: TextStyle(
+                              fontSize: isSelected ? 32 : 24,
+                              fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                              color: isSelected ? Colors.black87 : Colors.grey,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
+          // Boutons
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () {
+                    HapticFeedback.selectionClick();
+                    Navigator.of(context).pop();
+                  },
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    side: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  child: Text(
+                    'Annuler',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    HapticFeedback.mediumImpact();
+                    Navigator.of(context).pop({
+                      'hour': _selectedHour,
+                      'minute': _selectedMinute,
+                    });
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.black87,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    'Confirmer',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }

@@ -5,7 +5,6 @@
 // gestures. You can also use WidgetTester to find child widgets in the widget
 // tree, read text, and verify that the values of widget properties are correct.
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:filmeals_app/main.dart';
 import 'package:filmeals_app/core/services/local_storage_service.dart';
@@ -25,10 +24,11 @@ void main() {
     await tester.pumpWidget(MyApp(
       userRepository: userRepository,
       mealRepository: mealRepository,
+      storageService: storageService,
     ));
 
     // Verify that the Welcome screen shows up
-    expect(find.text('FitMeals'), findsOneWidget);
+    expect(find.text('HealthSync'), findsOneWidget);
     expect(find.text('Commencer'), findsOneWidget);
   });
 }
