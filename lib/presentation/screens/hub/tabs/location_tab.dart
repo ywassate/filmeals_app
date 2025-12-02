@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:filmeals_app/core/widgets/minimal_snackbar.dart';
@@ -35,7 +36,7 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
 
   bool _isTracking = false;
   bool _isPaused = false;
-  bool _isLoadingLocation = true;
+  bool _isLoadingLocation = false;
   bool _isInitialized = false;
   double _distance = 0.0;
   double _speed = 0.0;
@@ -76,10 +77,15 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
   }
 
   Future<void> _init() async {
+    // Position par défaut immédiate (Paris)
+    _currentPosition = const LatLng(48.8566, 2.3522);
+
     await _initStorage();
     await _loadData();
     _setupCallbacks();
     _notificationService.initialize();
+
+    // Charger la vraie position en arrière-plan sans bloquer l'UI
     _getCurrentLocation();
   }
 
@@ -121,11 +127,17 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
 
   Future<void> _getCurrentLocation() async {
     try {
-      final position = await _gpsService.getCurrentPosition();
+      final position = await _gpsService.getCurrentPosition().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          debugPrint('GPS timeout - using default location');
+          return null;
+        },
+      );
+
       if (position != null && mounted) {
         setState(() {
           _currentPosition = LatLng(position.latitude, position.longitude);
-          _isLoadingLocation = false;
         });
         // Wait for the map to be ready before moving
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -137,18 +149,10 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
             }
           }
         });
-      } else if (mounted) {
-        setState(() {
-          _isLoadingLocation = false;
-        });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoadingLocation = false;
-        });
-      }
       debugPrint('Erreur lors de la récupération de la position: $e');
+      // La position par défaut est déjà définie dans _init(), pas besoin de la redéfinir
     }
   }
 
@@ -325,6 +329,18 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
     ).then((_) => _loadData());
   }
 
+  String _formatElapsedTime() {
+    final hours = _elapsed.inHours;
+    final minutes = _elapsed.inMinutes % 60;
+    final seconds = _elapsed.inSeconds % 60;
+
+    if (hours > 0) {
+      return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    } else {
+      return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    }
+  }
+
   @override
   void dispose() {
     _timer?.cancel();
@@ -335,18 +351,6 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
   @override
   Widget build(BuildContext context) {
     super.build(context); // Important pour AutomaticKeepAliveClientMixin
-
-    if (_isLoadingLocation) {
-      return const Scaffold(
-        backgroundColor: AppTheme.backgroundColor,
-        body: Center(
-          child: CircularProgressIndicator(
-            valueColor: AlwaysStoppedAnimation<Color>(AppTheme.textPrimaryColor),
-            strokeWidth: 2,
-          ),
-        ),
-      );
-    }
 
     // Mode Tracking : Carte plein écran
     if (_isTracking) {
@@ -496,7 +500,7 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
           // Carte plein écran
           _buildFullScreenMap(),
 
-          // Overlay avec timer et stats en haut
+          // Overlay avec timer, stats et boutons en haut
           Positioned(
             top: 0,
             left: 0,
@@ -518,8 +522,54 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
                 ),
                 child: Column(
                   children: [
-                    // Timer principal
-                    _buildTimer(),
+                    // Timer avec boutons sur la même ligne
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        // Bouton Pause/Play
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: const BoxDecoration(
+                            color: AppTheme.textPrimaryColor,
+                            shape: BoxShape.circle,
+                          ),
+                          child: IconButton(
+                            onPressed: _togglePause,
+                            icon: Icon(
+                              _isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                              color: Colors.white,
+                              size: 24,
+                            ),
+                            padding: EdgeInsets.zero,
+                          ),
+                        ),
+                        // Timer au centre
+                        Expanded(
+                          child: Center(
+                            child: _buildTimer(),
+                          ),
+                        ),
+                        // Bouton Stop
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: const BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                          child: IconButton(
+                            onPressed: _stopTracking,
+                            icon: const Icon(
+                              Icons.stop_rounded,
+                              color: Colors.white,
+                              size: 24,
+                            ),
+                            padding: EdgeInsets.zero,
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 24),
                     // Divider
                     Container(
@@ -554,78 +604,6 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
                           label: 'STEPS',
                         ),
                       ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // Boutons Pause et Stop en bas
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Row(
-                  children: [
-                    // Bouton Pause/Play
-                    Container(
-                      width: 56,
-                      height: 56,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.95),
-                        borderRadius: BorderRadius.circular(16),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 20,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: IconButton(
-                        onPressed: _togglePause,
-                        icon: Icon(
-                          _isPaused ? Icons.play_arrow : Icons.pause,
-                          color: AppTheme.textPrimaryColor,
-                          size: 28,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    // Bouton Stop
-                    Expanded(
-                      child: SizedBox(
-                        height: 56,
-                        child: TextButton(
-                          onPressed: _stopTracking,
-                          style: TextButton.styleFrom(
-                            backgroundColor: Colors.red,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                          ),
-                          child: const Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.stop, size: 24),
-                              SizedBox(width: 8),
-                              Text(
-                                'Stop Tracking',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
                     ),
                   ],
                 ),
@@ -1006,27 +984,106 @@ class _LocationTabState extends State<LocationTab> with AutomaticKeepAliveClient
   }
 
   Widget _buildButton() {
-    return SizedBox(
-      width: double.infinity,
-      height: 52,
-      child: TextButton(
-        onPressed: _isTracking ? _stopTracking : _startTracking,
-        style: TextButton.styleFrom(
-          backgroundColor: _isTracking ? Colors.red : AppTheme.textPrimaryColor,
-          foregroundColor: Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+    if (!_isTracking) {
+      // Bouton Start quand pas en tracking
+      return SizedBox(
+        width: double.infinity,
+        height: 52,
+        child: TextButton(
+          onPressed: _startTracking,
+          style: TextButton.styleFrom(
+            backgroundColor: AppTheme.textPrimaryColor,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          child: const Text(
+            'Start Tracking',
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.5,
+            ),
           ),
         ),
-        child: Text(
-          _isTracking ? 'Stop Tracking' : 'Start Tracking',
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.5,
+      );
+    }
+
+    // Boutons Pause et Stop quand en tracking
+    return Row(
+      children: [
+        // Bouton Pause/Resume
+        Expanded(
+          child: SizedBox(
+            height: 52,
+            child: TextButton(
+              onPressed: _togglePause,
+              style: TextButton.styleFrom(
+                backgroundColor: _isPaused
+                    ? AppTheme.textPrimaryColor
+                    : AppTheme.surfaceColor,
+                foregroundColor: _isPaused
+                    ? Colors.white
+                    : AppTheme.textPrimaryColor,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    _isPaused ? Icons.play_arrow : Icons.pause,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _isPaused ? 'Resume' : 'Pause',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
-      ),
+        const SizedBox(width: 12),
+        // Bouton Stop
+        Expanded(
+          child: SizedBox(
+            height: 52,
+            child: TextButton(
+              onPressed: _stopTracking,
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.stop, size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    'Stop',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
