@@ -223,13 +223,19 @@ class BluetoothContactModel {
   final String deviceName; // Nom du device Bluetooth
 
   @HiveField(3)
-  final DateTime firstEncounter; // Première rencontre
+  final DateTime firstEncounter; // Première rencontre (toute première fois)
 
   @HiveField(4)
-  final DateTime lastEncounter; // Dernière rencontre
+  final DateTime lastEncounter; // Dernière rencontre (fin de la dernière session)
 
   @HiveField(5)
   final int encounterCount; // Nombre de rencontres
+
+  @HiveField(6)
+  final List<int> encounterDurations; // Durée de chaque rencontre en minutes
+
+  @HiveField(7)
+  final int totalDurationMinutes; // Durée totale de toutes les rencontres en minutes
 
   BluetoothContactModel({
     required this.macAddress,
@@ -238,7 +244,10 @@ class BluetoothContactModel {
     required this.firstEncounter,
     required this.lastEncounter,
     required this.encounterCount,
-  });
+    List<int>? encounterDurations,
+    int? totalDurationMinutes,
+  })  : encounterDurations = encounterDurations ?? [],
+        totalDurationMinutes = totalDurationMinutes ?? 0;
 
   BluetoothContactModel copyWith({
     String? macAddress,
@@ -247,6 +256,8 @@ class BluetoothContactModel {
     DateTime? firstEncounter,
     DateTime? lastEncounter,
     int? encounterCount,
+    List<int>? encounterDurations,
+    int? totalDurationMinutes,
   }) {
     return BluetoothContactModel(
       macAddress: macAddress ?? this.macAddress,
@@ -255,6 +266,8 @@ class BluetoothContactModel {
       firstEncounter: firstEncounter ?? this.firstEncounter,
       lastEncounter: lastEncounter ?? this.lastEncounter,
       encounterCount: encounterCount ?? this.encounterCount,
+      encounterDurations: encounterDurations ?? this.encounterDurations,
+      totalDurationMinutes: totalDurationMinutes ?? this.totalDurationMinutes,
     );
   }
 
@@ -266,6 +279,8 @@ class BluetoothContactModel {
       'firstEncounter': firstEncounter.toIso8601String(),
       'lastEncounter': lastEncounter.toIso8601String(),
       'encounterCount': encounterCount,
+      'encounterDurations': encounterDurations,
+      'totalDurationMinutes': totalDurationMinutes,
     };
   }
 
@@ -277,11 +292,27 @@ class BluetoothContactModel {
       firstEncounter: DateTime.parse(json['firstEncounter']),
       lastEncounter: DateTime.parse(json['lastEncounter']),
       encounterCount: json['encounterCount'],
+      encounterDurations: json['encounterDurations'] != null
+          ? List<int>.from(json['encounterDurations'])
+          : [],
+      totalDurationMinutes: json['totalDurationMinutes'] ?? 0,
     );
+  }
+
+  /// Obtenir la durée moyenne des rencontres en minutes
+  double get averageDurationMinutes {
+    if (encounterDurations.isEmpty) return 0;
+    return encounterDurations.reduce((a, b) => a + b) / encounterDurations.length;
+  }
+
+  /// Obtenir la durée de la dernière rencontre en minutes
+  int get lastEncounterDuration {
+    if (encounterDurations.isEmpty) return 0;
+    return encounterDurations.last;
   }
 
   @override
   String toString() {
-    return 'BluetoothContact: $contactName ($macAddress) - $encounterCount rencontres';
+    return 'BluetoothContact: $contactName ($macAddress) - $encounterCount rencontres - ${totalDurationMinutes}min total';
   }
 }

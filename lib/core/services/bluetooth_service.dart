@@ -49,11 +49,13 @@ class BluetoothService {
   Function(int, int, int)? _onProgressCallback;
 
   // === Tracking temporel ===
-  // Durée minimum: 5 minutes (300 secondes)
-  int minimumDurationSeconds = 300;
+  // Durée minimum pour valider une rencontre (par défaut: 2 minutes = 120 secondes)
+  int minimumDurationSeconds = 120;
 
   Map<String, TemporaryDetection> _temporaryDetections = {};
   Set<String> _alreadyFilteredAddresses = {};
+  Set<String> _alreadyValidatedAddresses = {}; // Adresses déjà validées pour cette session
+  Map<String, DateTime> _sessionStartTimes = {}; // Heure de début de chaque session de rencontre
 
   // === Cache pour optimisation batterie ===
   Map<String, String?> _contactMatchCache = {};
@@ -140,8 +142,8 @@ class BluetoothService {
 
   /// Démarrer le scan continu 24/7 - MÉTHODE PRINCIPALE
   ///
-  /// Scan toutes les 5 minutes en continu jusqu'à stopScan()
-  /// Valide uniquement les devices présents ≥ 5 minutes
+  /// Scan toutes les 1 minute en continu jusqu'à stopScan()
+  /// Valide uniquement les devices présents ≥ minimumDurationSeconds
   Future<void> startContinuousScan({
     Function(int, int, int)? onProgress,
   }) async {
@@ -152,16 +154,18 @@ class BluetoothService {
       _onProgressCallback = onProgress; // Sauvegarder le callback
       _temporaryDetections.clear();
       _alreadyFilteredAddresses.clear();
+      _alreadyValidatedAddresses.clear(); // Reset des validations
+      _sessionStartTimes.clear(); // Reset des heures de début
 
-      print('🔍 Démarrage du scan continu (intervalle: 5min, validation: ≥5min)');
+      print('🔍 Démarrage du scan continu (intervalle: 1min, validation: ≥${minimumDurationSeconds}s)');
       print('⚠️ Gardez l\'application ouverte pour un scan continu');
 
       // Premier scan immédiat
       await _performScanCycle(_onProgressCallback);
 
-      // Configurer le scan périodique toutes les 5 minutes
+      // Configurer le scan périodique toutes les 1 minute
       _continuousScanTimer = Timer.periodic(
-        const Duration(minutes: 5),
+        const Duration(minutes: 1),
         (timer) async {
           if (_isScanning) {
             await _performScanCycle(_onProgressCallback);
@@ -198,10 +202,10 @@ class BluetoothService {
         await _filterNewDevicesByContacts();
       }
 
-      // Valider les détections qui ont atteint la durée minimum (5 min)
+      // Valider les détections qui ont atteint la durée minimum (2 min)
       int validated = await _validateDetections();
 
-      // Notifier l'UI
+      // Notifier l'UI (TOUJOURS, même si validated = 0, pour forcer le refresh)
       if (onProgress != null) {
         onProgress(
           _temporaryDetections.length,
@@ -210,13 +214,58 @@ class BluetoothService {
         );
       }
 
-      // Nettoyer les devices fantômes (non vus depuis 10 minutes)
+      // Forcer le rechargement de la liste si des devices sont trackés
+      if (_temporaryDetections.isNotEmpty && onProgress != null) {
+        print('💫 Forcer le rechargement de l\'UI (${_temporaryDetections.length} devices trackés)');
+      }
+
+      // Nettoyer les devices fantômes (non vus depuis 2 minutes)
       _cleanupGhostDevices();
 
-      print('✅ Cycle terminé: $_temporaryDetections.length devices trackés, $validated validés');
+      print('✅ Cycle terminé: ${_temporaryDetections.length} devices trackés, $validated validés');
 
     } catch (e) {
       print('❌ Erreur cycle scan: $e');
+    }
+  }
+
+  /// Mettre à jour lastEncounter dans Hive quand la personne part
+  Future<void> _updateLastEncounterOnDeparture(String macAddress, DateTime lastSeenTime) async {
+    try {
+      if (_storageService == null) return;
+
+      final box = _storageService!.bluetoothContactsBox;
+      final existingContact = box.get(macAddress);
+
+      if (existingContact != null) {
+        // Récupérer l'heure de début de cette session
+        final sessionStart = _sessionStartTimes[macAddress];
+
+        if (sessionStart != null) {
+          // Calculer la durée réelle de cette rencontre
+          final duration = lastSeenTime.difference(sessionStart);
+          final minutes = duration.inMinutes;
+          final seconds = duration.inSeconds % 60;
+
+          // Ajouter la durée à l'historique
+          final updatedDurations = List<int>.from(existingContact.encounterDurations)..add(minutes);
+          final updatedTotalDuration = existingContact.totalDurationMinutes + minutes;
+
+          // Mettre à jour avec l'heure réelle de fin et les durées
+          final updatedContact = existingContact.copyWith(
+            lastEncounter: lastSeenTime,
+            encounterDurations: updatedDurations,
+            totalDurationMinutes: updatedTotalDuration,
+          );
+          await box.put(macAddress, updatedContact);
+
+          print('⏱️ Durée de la rencontre: ${minutes}min ${seconds}s avec ${existingContact.contactName}');
+          print('📊 Début: ${sessionStart.hour}:${sessionStart.minute.toString().padLeft(2, '0')} → Fin: ${lastSeenTime.hour}:${lastSeenTime.minute.toString().padLeft(2, '0')}');
+          print('📈 Total cumulé: ${updatedTotalDuration}min (${updatedDurations.length} rencontres enregistrées)');
+        }
+      }
+    } catch (e) {
+      print('❌ Erreur mise à jour lastEncounter: $e');
     }
   }
 
@@ -224,11 +273,18 @@ class BluetoothService {
   void _cleanupGhostDevices() {
     final now = DateTime.now();
     _temporaryDetections.removeWhere((address, detection) {
-      // Supprimer si non vu depuis 10 minutes
-      bool isExpired = now.difference(detection.lastSeen).inMinutes >= 10;
+      // Supprimer si non vu depuis 2 minutes
+      bool isExpired = now.difference(detection.lastSeen).inMinutes >= 2;
       if (isExpired) {
+        // Si l'appareil était validé, mettre à jour lastEncounter dans Hive avec l'heure réelle de fin
+        if (_alreadyValidatedAddresses.contains(address)) {
+          _updateLastEncounterOnDeparture(address, detection.lastSeen);
+        }
+
         _alreadyFilteredAddresses.remove(address);
-        print('🧹 Nettoyage: ${detection.name} ($address) non vu depuis 10min');
+        _alreadyValidatedAddresses.remove(address); // Oublier la validation
+        _sessionStartTimes.remove(address); // Oublier l'heure de début
+        print('🧹 Nettoyage: ${detection.name} ($address) non vu depuis 2min - Rencontre terminée');
       }
       return isExpired;
     });
@@ -274,6 +330,8 @@ class BluetoothService {
     if (_temporaryDetections.containsKey(address)) {
       var detection = _temporaryDetections[address]!;
       detection.lastSeen = now;
+      final totalSeconds = detection.duration.inSeconds;
+      print('🔄 Mise à jour: $name - Durée: ${detection.duration.inMinutes}min ${totalSeconds % 60}s (total: ${totalSeconds}s/${minimumDurationSeconds}s requis)');
     } else {
       _temporaryDetections[address] = TemporaryDetection(
         address: address,
@@ -281,6 +339,8 @@ class BluetoothService {
         firstSeen: now,
         lastSeen: now,
       );
+      _sessionStartTimes[address] = now; // Stocker l'heure de début de cette session
+      print('🆕 Nouveau device tracké: $name à ${now.hour}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}');
     }
   }
 
@@ -293,6 +353,7 @@ class BluetoothService {
 
       if (matchedContactName == null) {
         _temporaryDetections.remove(entry.key);
+        _sessionStartTimes.remove(entry.key); // Nettoyer aussi l'heure de début
       } else {
         _alreadyFilteredAddresses.add(entry.key);
       }
@@ -312,6 +373,7 @@ class BluetoothService {
 
       if (matchedContactName == null) {
         _temporaryDetections.remove(entry.key);
+        _sessionStartTimes.remove(entry.key); // Nettoyer aussi l'heure de début
       } else {
         _alreadyFilteredAddresses.add(entry.key);
       }
@@ -322,19 +384,48 @@ class BluetoothService {
     int validated = 0;
     final detectionsToCheck = Map<String, TemporaryDetection>.from(_temporaryDetections);
 
+    print('━━━━━━━━━━ VALIDATION CYCLE ━━━━━━━━━━');
+    print('📋 Devices à vérifier: ${detectionsToCheck.length}');
+
     for (var entry in detectionsToCheck.entries) {
       final detection = entry.value;
       int durationSeconds = detection.duration.inSeconds;
 
-      if (durationSeconds >= minimumDurationSeconds) {
-        bool wasMatched = await _processDevice(detection.name, detection.address);
-        if (wasMatched) validated++;
+      print('\n🔍 Vérification: ${detection.name}');
+      print('   MAC: ${entry.key}');
+      print('   Durée: ${durationSeconds}s (min: ${minimumDurationSeconds}s requis)');
+      print('   FirstSeen: ${detection.firstSeen.toIso8601String()}');
+      print('   LastSeen: ${detection.lastSeen.toIso8601String()}');
 
-        _temporaryDetections.remove(entry.key);
-        _alreadyFilteredAddresses.remove(entry.key);
+      // Vérifier si déjà validé pour cette session de présence continue
+      if (_alreadyValidatedAddresses.contains(entry.key)) {
+        print('   ⏭️ SKIP : Déjà validé pour cette session');
+        continue;
+      }
+
+      // Vérifier si dans la liste filtrée
+      if (!_alreadyFilteredAddresses.contains(entry.key)) {
+        print('   ⚠️ SKIP : Pas dans la liste filtrée (pas de match contact)');
+        continue;
+      }
+
+      if (durationSeconds >= minimumDurationSeconds) {
+        print('   ✅ Durée SUFFISANTE ! Tentative de validation...');
+        bool wasMatched = await _processDevice(detection.name, detection.address);
+        if (wasMatched) {
+          validated++;
+          _alreadyValidatedAddresses.add(entry.key); // Marquer comme validé
+          print('   🎉 SUCCÈS : Device validé et enregistré dans Hive !');
+        } else {
+          print('   ❌ ÉCHEC : Validation échouée (matching contact failed)');
+        }
+      } else {
+        int remaining = minimumDurationSeconds - durationSeconds;
+        print('   ⏳ En attente : encore ${remaining}s requis');
       }
     }
 
+    print('\n━━━━━━━━━━ RÉSULTAT : ${validated} validés ━━━━━━━━━━\n');
     return validated;
   }
 
@@ -347,17 +438,24 @@ class BluetoothService {
   /// Enregistrer un device validé en base de données Hive
   Future<bool> _processDevice(String bluetoothName, String macAddress) async {
     try {
+      print('   📝 _processDevice() appelé pour: $bluetoothName ($macAddress)');
+
       if (_storageService == null) {
-        print('❌ StorageService non initialisé');
+        print('   ❌ ERREUR : StorageService non initialisé');
         return false;
       }
 
-      final matchedContactName = await ContactsMatchingService.instance
-          .findMatchingContact(bluetoothName);
+      // Utiliser le cache pour éviter de re-vérifier le matching
+      print('   🔍 Recherche contact match dans cache...');
+      final matchedContactName = await _checkContactWithCache(bluetoothName);
 
       if (matchedContactName == null) {
+        print('   ❌ ERREUR : Aucun match trouvé pour "$bluetoothName"');
+        print('   💡 Vérifiez que ce nom correspond à un contact dans votre téléphone');
         return false;
       }
+
+      print('   ✅ Contact trouvé : "$matchedContactName"');
 
       final box = _storageService!.bluetoothContactsBox;
       final existingContact = box.get(macAddress);
@@ -365,6 +463,10 @@ class BluetoothService {
       final now = DateTime.now();
 
       if (existingContact != null) {
+        // Contact existant : nouvelle session de rencontre
+        print('   📱 Contact EXISTANT trouvé dans Hive');
+        print('   🔄 Incrémentation encounterCount: ${existingContact.encounterCount} → ${existingContact.encounterCount + 1}');
+
         final updatedContact = BluetoothContactModel(
           macAddress: macAddress,
           contactName: matchedContactName,
@@ -372,20 +474,33 @@ class BluetoothService {
           firstEncounter: existingContact.firstEncounter,
           lastEncounter: now,
           encounterCount: existingContact.encounterCount + 1,
+          encounterDurations: existingContact.encounterDurations,
+          totalDurationMinutes: existingContact.totalDurationMinutes,
         );
         await box.put(macAddress, updatedContact);
-        print('✅ $matchedContactName enregistré (rencontre #${updatedContact.encounterCount})');
+        print('   💾 Contact mis à jour dans Hive');
+        print('   ✅ $matchedContactName enregistré (rencontre #${updatedContact.encounterCount})');
       } else {
+        // Nouveau contact : première rencontre
+        print('   🆕 NOUVEAU contact - Première rencontre');
+
+        // Utiliser l'heure de début de session au lieu de l'heure de validation
+        final sessionStart = _sessionStartTimes[macAddress] ?? now;
+        print('   🕐 Heure de début: ${sessionStart.hour}:${sessionStart.minute.toString().padLeft(2, '0')}:${sessionStart.second.toString().padLeft(2, '0')}');
+
         final newContact = BluetoothContactModel(
           macAddress: macAddress,
           contactName: matchedContactName,
           deviceName: bluetoothName,
-          firstEncounter: now,
-          lastEncounter: now,
+          firstEncounter: sessionStart, // Heure de début réelle, pas validation
+          lastEncounter: sessionStart,  // Sera mis à jour au cleanup
           encounterCount: 1,
+          encounterDurations: [], // Pas encore de durée enregistrée
+          totalDurationMinutes: 0,
         );
         await box.put(macAddress, newContact);
-        print('✅ $matchedContactName enregistré (nouvelle rencontre)');
+        print('   💾 Contact enregistré dans Hive');
+        print('   ✅ $matchedContactName enregistré (première rencontre)');
       }
 
       return true;
